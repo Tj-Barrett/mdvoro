@@ -46,3 +46,7 @@ Homepage = "https://github.com/tj-barrett/mdvoro"
 
 [tool.setuptools]
 package-data = {"*" = ["*"]}
+
+[tool.setuptools.packages.find]
+include = ["mdvoro*"]
+exclude = ["images*"]

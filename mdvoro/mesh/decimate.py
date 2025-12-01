@@ -167,7 +167,7 @@ def _decimate_faces(voro, grain_boundary, cell_cutoff):
                 if len(face)>0:
                     adj = face['adjacent_cell']
                     vert = face['vertices']
-
+                    
                     adjbool = False
 
                     close = mdutils.is_not_far( np.array(voro[i]['original'][0:3]),

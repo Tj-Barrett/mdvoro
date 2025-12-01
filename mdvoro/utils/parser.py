@@ -27,6 +27,11 @@ def parser():
         help="Create mesh", 
         action="store_true"
     )
+    required.add_argument(
+        "-test", 
+        help="Create mesh", 
+        action="store_true"
+    )
 
     args = parser.parse_args()
 

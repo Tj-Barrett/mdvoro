@@ -278,8 +278,8 @@ def compute_voro(data, lims, dispersion = 1.0, radii=[], periodic=[False]*3,
                 a_cell_data : the adjacent cell data
                 '''
                 a_cell_num = c_face_data['adjacent_cell']
-                a_cell_data = cells[a_cell_num]
                 if a_cell_num > 0:
+                    a_cell_data = cells[a_cell_num]
                     for a_face_num, a_face_data in enumerate(a_cell_data['faces']):
                         if _mismatch and a_face_data['adjacent_cell'] == c_cell_num:
                             _mismatch = False
