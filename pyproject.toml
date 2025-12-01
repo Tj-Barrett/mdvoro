@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "MDvoro"
+readme = "README.md"
+version = "2025.01"
+description = "A Python package for hierarchical multiscale modeling"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [
+    { name = "Thomas J. Barrett", email = "barrett.t@northeastern.edu" },
+]
+keywords = [
+    "multiscale",
+    "polymers",
+    "composites",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Researchers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Topic :: Materials Science :: Research Tools",
+]
+dependencies = [
+    "setuptools",
+    "numpy",
+    "scipy",
+    "rich",
+    "pyyaml"
+]
+
+[project.scripts]
+mdvoro = "mdvoro:__main__.main"
+
+[project.urls]
+Homepage = "https://github.com/tj-barrett/mdvoro"
+
+[tool.setuptools]
+package-data = {"*" = ["*"]}

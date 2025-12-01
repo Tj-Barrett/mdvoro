@@ -1,0 +1,7 @@
+#
+# Configuration file for necessary applications. Place path to binary (or command) here.
+#
+tetgen: ./tetgen
+voro++: voro++
+
+
