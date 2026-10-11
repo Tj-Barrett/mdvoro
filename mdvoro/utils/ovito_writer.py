@@ -76,8 +76,10 @@ def ovito_writer(filename, voro, lims):
                         cell_global[c_v]['bonds'].append(str(cell_num)+'-'+str(face_verts[i-1]) )
 
     n_bonds = 0
-    for i, _cell in enumerate(cell_global):
-        n_bonds+= len(cell_global[_cell]['bonds'])
+    for _cell in cell_global:
+        for pair in cell_global[_cell]['bonds']:
+            if pair in cell_global:
+                n_bonds += 1
 
     del voro
 

@@ -459,7 +459,7 @@ def _periodic_faces(voro, lims, periodic, split, max_area, pt_pt_dist_tol, min_e
                             _mismatch = False
                             for _p, _bool in enumerate(_peri):
                                 if periodic[_p] != _bool:
-                                    _mismatch == True
+                                    _mismatch = True
                                     break
 
                             if not _mismatch :
@@ -634,9 +634,9 @@ def _triangle_face_handle(voro, cell_num, new_face, new_verts, existing_verts, p
     for i in new_face:
         temp_face.append([-1, -1, -1])
 
-    new_face = set(list(map(tuple, new_face)))
-    new_verts = set(list(map(tuple, new_verts)))
-    existing_verts = set(list(map(tuple, existing_verts)))
+    new_face = list(map(tuple, new_face))
+    new_verts = list(map(tuple, new_verts))
+    existing_verts = list(map(tuple, existing_verts))
 
     for _nv, pt in enumerate(new_verts):
         min_index, min_location, dist = mdutils.find_closest(pt, list(existing_verts))
