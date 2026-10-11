@@ -33,7 +33,7 @@ classifiers = [
 dependencies = [
     "setuptools",
     "numpy",
-    "scipy",
+    "pyvoro",
     "rich",
     "pyyaml"
 ]
@@ -50,3 +50,16 @@ package-data = {"*" = ["*"]}
 [tool.setuptools.packages.find]
 include = ["mdvoro*"]
 exclude = ["images*"]
+
+[tool.pytest.ini_options]
+testpaths = ["mdvoro/test"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.coverage.run]
+source = ["mdvoro"]
+omit = ["mdvoro/test/*"]
+
+[tool.coverage.report]
+show_missing = true

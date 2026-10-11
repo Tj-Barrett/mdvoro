@@ -38,7 +38,7 @@ class TestDecimateFaces:
             _make_cell(5.0, 0.0, 0.0, phase=2, adj_list=[ 0, -1]),  # cell 1
         ]
         # large cutoff so nothing is decimated by distance
-        result, vols = _decimate_faces(voro, grain_boundary=False, cell_cutoff=100.0)
+        result, vols = _decimate_faces(voro, grain_boundary=False, surf_cutoff=1.0, cell_cutoff=100.0)
         # Both cells should have faces to each other
         cell1_adjs = [f['adjacent_cell'] for f in result[1]['faces']]
         assert 0 in cell1_adjs, "Face to cell 0 was incorrectly dropped"
@@ -50,7 +50,7 @@ class TestDecimateFaces:
             _make_cell(0.5, 0.0, 0.0, phase=1, adj_list=[0, 2, -1]),
             _make_cell(1.0, 0.0, 0.0, phase=1, adj_list=[0, 1, -1]),
         ]
-        result, vols = _decimate_faces(voro, grain_boundary=False, cell_cutoff=100.0)
+        result, vols = _decimate_faces(voro, grain_boundary=False, surf_cutoff=1.0, cell_cutoff=100.0)
         # All three are same phase and close — all become decimated (volume=-1)
         # or their cross-phase faces are empty
         surviving_faces = [f for cell in result for f in cell['faces']
@@ -65,11 +65,42 @@ class TestDecimateFaces:
             _make_cell(0.0, 0.0, 0.0, phase=1, adj_list=[1, -1]),
             _make_cell(5.0, 0.0, 0.0, phase=2, adj_list=[0, -1]),
         ]
-        result, _ = _decimate_faces(voro, grain_boundary=False, cell_cutoff=100.0)
+        result, _ = _decimate_faces(voro, grain_boundary=False, surf_cutoff=1.0, cell_cutoff=100.0)
         all_adjs = [f['adjacent_cell'] for cell in result
                     for f in cell['faces'] if cell['volume'] != -1]
         # There should be faces connecting the two phases
         assert 0 in all_adjs or 1 in all_adjs
+
+    def test_grain_boundary_false_drops_intercell_face_on_surface_cell(self):
+        """Bug fix: was 'elif grain_boundary' (inverted). With grain_boundary=False,
+        boundary faces count toward the decimation criterion. A surface cell whose
+        only adj>=0 neighbor is same-phase and close gets its inter-cell face dropped
+        (only its boundary wall face is retained)."""
+        voro = [
+            _make_cell(0.0, 0.0, 0.0, phase=1, adj_list=[1, -1]),
+            _make_cell(0.5, 0.0, 0.0, phase=1, adj_list=[0, -1]),
+        ]
+        result, _ = _decimate_faces(voro, grain_boundary=False, surf_cutoff=1.0, cell_cutoff=100.0)
+        # Inter-cell faces between same-phase close cells must not appear in output
+        inter_cell_faces = [f for cell in result for f in cell['faces']
+                            if f['adjacent_cell'] >= 0]
+        assert inter_cell_faces == []
+
+    def test_grain_boundary_true_boundary_face_not_counted_for_decimation(self):
+        """With grain_boundary=True, boundary faces (adj<0) do NOT count toward
+        the decimation criterion. A cell with one same-phase close neighbor and one
+        boundary face has n=1 < allneigh=2, so it is NOT decimated and retains
+        its inter-cell face."""
+        voro = [
+            _make_cell(0.0, 0.0, 0.0, phase=1, adj_list=[1, -1]),
+            _make_cell(0.5, 0.0, 0.0, phase=1, adj_list=[0, -1]),
+        ]
+        result, _ = _decimate_faces(voro, grain_boundary=True, surf_cutoff=1.0, cell_cutoff=100.0)
+        # With grain_boundary=True, cells are NOT fully decimated;
+        # boundary faces (adj<0) are excluded from output (grain boundary mode)
+        # but the cells themselves survive (not volume=-1).
+        surviving_volumes = [cell['volume'] for cell in result if cell['volume'] != -1]
+        assert len(surviving_volumes) > 0
 
 
 class TestDecimatePoints:

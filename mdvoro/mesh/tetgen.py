@@ -42,43 +42,29 @@ class tetgen(object):
         self.mesh_args = []
         self.seeds = []
         self.lims = []
+        self.cleanup_temp_files()
 
-        meshname = 'temp'
-        # clean up
-        if os.path.exists(meshname+'.1.node'):
-            os.remove(meshname+'.1.node')
-        if os.path.exists(meshname+'.1.edge'):
-            os.remove(meshname+'.1.edge')
-        if os.path.exists(meshname+'.1.face'):
-            os.remove(meshname+'.1.face')
-        if os.path.exists(meshname+'.1.ele'):
-            os.remove(meshname+'.1.ele')
-        if os.path.exists(meshname+'.poly'):
-            os.remove(meshname+'.poly')
+    @staticmethod
+    def cleanup_temp_files(meshname='temp'):
+        """
+        Clean up temporary mesh files from previous runs.
 
-        # print(mdvoro.__path__)
-
-        # if os.path.exists(inspect.getfile(lambda: None)):
-        #     md_path = os.path.dirname(inspect.getfile(lambda: None))
-        #     static_path = md_path[0:-6]+'static'
-        #
-        #     print(inspect.getfile(lambda: None))
-        #
-        #     target = glob.glob(static_path+'/tetgen*')
-        #
-        #     print(target)
-        #     self.tetgen = target
-
-        # self.tetgen = '/Users/work/Documents/PhD/20230622-polyalign/MDvoro/static/tetgen'
-
-        # else:
-        #     print('Error : No instance of tetgen found. Please copy a compiled version into the static folder with some name tetgen*')
-        #     exit()
+        Parameters
+        ----------
+        meshname : str, default='temp'
+            Base name of temporary mesh files to remove.
+        """
+        temp_extensions = ['.1.node', '.1.edge', '.1.face', '.1.ele', '.poly']
+        for ext in temp_extensions:
+            filepath = meshname + ext
+            if os.path.exists(filepath):
+                os.remove(filepath)
 
     def mesh(self, voro, lims, method='tetgen',
              periodic = [False]*3, pbctype = None, tri_face=False,
              grain_boundary=False, nomesh = False, noovito=True,
-             reduced_ovito=True, decimate_cutoff = None, query=None, tetcmds = ''):
+             reduced_ovito=True, decimate_cutoff = None, query=None, tetcmds = '',
+             n_workers=None):
 
         if pbctype == 'np' or pbctype == 'pbc':
             pbctype = pbctype
@@ -159,7 +145,8 @@ For systems above 200,000, use voro++
                                 lims,
                                 grain_boundary=grain_boundary,
                                 cell_cutoff = decimate_cutoff,
-                                query = query)
+                                query = query,
+                                n_workers = n_workers)
 
         pts_global, atts, faces, regions, boundaries, vols, self.seeds, facets, _voro = _voro_reader(self, voro, qn)
 

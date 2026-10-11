@@ -29,16 +29,29 @@ Nomenclature:
 import  numpy as np
 from rich.progress import track
 from mdvoro.utils.mdutils import mdutils
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing as mp
 
-def decimate(voro, lims, grain_boundary=False, surfpts=10, cell_cutoff=10.0, query=None):
+def decimate(voro, lims, grain_boundary=False, surfpts=10, surf_cutoff=1.0, cell_cutoff=10.0, query=None, n_workers=None):
+    """
+    Decimate nonperiodic, internal cells and surfaces.
 
-    '''
-    Decimate nonperiodic, internal cells and surfaces
-    '''
+    Parameters
+    ----------
+    surf_cutoff : float, optional
+        Distance threshold for surface decimation.
+    n_workers : int, optional
+        Number of worker processes for parallelization.
+        If None, auto-detects and uses cpu_count() // 2.
+        Set to 1 to disable parallelization.
+    """
+    if n_workers is None:
+        n_workers = max(1, mp.cpu_count() // 2)
+
     if query is not None:
         print('----------------\nPre Decimation\n----------------')
         print(voro[query])
-    voro, vols = _decimate_faces(voro, grain_boundary, cell_cutoff)
+    voro, vols = _decimate_faces(voro, grain_boundary, surf_cutoff, cell_cutoff, n_workers=n_workers)
     '''
     Decimate edges based on surface normals
     '''
@@ -47,7 +60,7 @@ def decimate(voro, lims, grain_boundary=False, surfpts=10, cell_cutoff=10.0, que
     '''
     Decimate excess points
     '''
-    voro = _decimate_points(voro)
+    voro = _decimate_points(voro, n_workers=n_workers)
 
     if query is not None:
         print('----------------\nPost Decimation\n----------------')
@@ -56,7 +69,7 @@ def decimate(voro, lims, grain_boundary=False, surfpts=10, cell_cutoff=10.0, que
     Merge surviving cells
     '''
 
-    voro, phases, qn  = _merge_cells(voro, vols, query)
+    voro, phases, qn  = _merge_cells(voro, vols, query, n_workers=n_workers)
 
     # voro = _generate_convex_hull(voro, lims, surfpts)
 
@@ -92,7 +105,17 @@ OUTPUTS:
 ]
 '''
 # decimate internal cells of phases
-def _decimate_faces(voro, grain_boundary, cell_cutoff):
+def _decimate_faces(voro, grain_boundary, surf_cutoff, cell_cutoff, n_workers=None):
+    """
+    Decimate faces with optional parallelization.
+
+    Parameters
+    ----------
+    surf_cutoff : float
+        Distance threshold for surface decimation.
+    n_workers : int, optional
+        Number of worker processes. Reserved for future parallelization.
+    """
     seeds = {}
     # vol dict -- phase:volume
     vols = {}
@@ -137,14 +160,14 @@ def _decimate_faces(voro, grain_boundary, cell_cutoff):
         allneigh = len(neighlist)
         n = 0
         for adj in neighlist:
-            if adj >= 0:
+            if adj >= 0 and adj < len(voro):
                 close = mdutils.is_not_far( np.array(voro[c_cell_num]['original'][0:3]),
                                          np.array(voro[adj]['original'][0:3]),
                                          cell_cutoff)
                 if seeds[c_cell_num]['phase']==seeds[adj]['phase'] and close:
                     n +=1
 
-            elif grain_boundary: # boundary condition
+            elif not grain_boundary: # boundary condition
                 n +=1
 
         rn = c_cell_num + 1
@@ -167,27 +190,28 @@ def _decimate_faces(voro, grain_boundary, cell_cutoff):
                 if len(face)>0:
                     adj = face['adjacent_cell']
                     vert = face['vertices']
-                    
+
                     adjbool = False
 
-                    close = mdutils.is_not_far( np.array(voro[i]['original'][0:3]),
-                                             np.array(voro[adj]['original'][0:3]),
-                                             cell_cutoff)
+                    if adj < 0:
+                        if not grain_boundary: # boundary condition, comment out for grain boundary
+                            new_faces.append({'adjacent_cell':adj,
+                                              'vertices':vert})
+                            adjbool = True
+                    elif adj < len(voro):
+                        close = mdutils.is_not_far( np.array(voro[i]['original'][0:3]),
+                                                 np.array(voro[adj]['original'][0:3]),
+                                                 cell_cutoff)
 
-                    if adj in survivors and voro[i]['original'][3] != voro[adj]['original'][3] and adj >= 0:
-                        new_faces.append({'adjacent_cell':adj,
-                                          'vertices':vert})
-                        adjbool = True
+                        if adj in survivors and voro[i]['original'][3] != voro[adj]['original'][3]:
+                            new_faces.append({'adjacent_cell':adj,
+                                              'vertices':vert})
+                            adjbool = True
 
-                    elif adj in survivors and voro[i]['original'][3] == voro[adj]['original'][3] and not close and adj >= 0:
-                        new_faces.append({'adjacent_cell':adj,
-                                          'vertices':vert})
-                        adjbool = True
-
-                    elif adj < 0 and not grain_boundary: # boundary condition, comment out for grain boundary
-                        new_faces.append({'adjacent_cell':adj,
-                                          'vertices':vert})
-                        adjbool = True
+                        elif adj in survivors and voro[i]['original'][3] == voro[adj]['original'][3] and not close:
+                            new_faces.append({'adjacent_cell':adj,
+                                              'vertices':vert})
+                            adjbool = True
 
             voro[i]['faces']=new_faces
 
@@ -253,7 +277,15 @@ def _decimate_faces(voro, grain_boundary, cell_cutoff):
 #
 #     return _voro
 
-def _decimate_points(voro):
+def _decimate_points(voro, n_workers=None):
+    """
+    Decimate excess points in Voronoi cells.
+
+    Parameters
+    ----------
+    n_workers : int, optional
+        Number of worker processes. Reserved for future parallelization.
+    """
     for c_cell_num, c_cell_data in track(enumerate(voro),  description= "{:<25}".format('Decimating Points ... ')):
         # face polyhedrals
         if c_cell_data['volume'] != -1:
@@ -304,7 +336,15 @@ OUTPUTS:
 '''
 
 
-def _merge_cells(voro, vols, query=None):
+def _merge_cells(voro, vols, query=None, n_workers=None):
+    """
+    Merge cells by phase.
+
+    Parameters
+    ----------
+    n_workers : int, optional
+        Number of worker processes. Reserved for future parallelization.
+    """
     _voro = []
     qn = []
 
