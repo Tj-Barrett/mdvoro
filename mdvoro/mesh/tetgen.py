@@ -81,7 +81,7 @@ class tetgen(object):
              reduced_ovito=True, decimate_cutoff = None, query=None, tetcmds = ''):
 
         if pbctype == 'np' or pbctype == 'pbc':
-            pbctype == pbctype
+            pbctype = pbctype
 
         elif pbctype is None:
             if sum(periodic) > 0:
@@ -213,9 +213,9 @@ def _abaqus_writer(filename, mesh_args, seeds, lims, supplemental_file):
     zlo = lims[2][0]
     zhi = lims[2][1]
 
-    xmid = (xhi-xlo)/2.0
-    ymid = (yhi-ylo)/2.0
-    zmid = (zhi-zlo)/2.0
+    xmid = xlo + (xhi-xlo)/2.0
+    ymid = ylo + (yhi-ylo)/2.0
+    zmid = zlo + (zhi-zlo)/2.0
 
     points = mesh_args[0]
     elements = mesh_args[1]
@@ -230,7 +230,7 @@ def _abaqus_writer(filename, mesh_args, seeds, lims, supplemental_file):
 
     seq = open(filename, 'w+')
     seq.write('** Job name: MDvoro \n')
-    seq.write('Model name: tess \n')
+    seq.write('** Model name: tess \n')
     seq.write('*\n')
     seq.write('**\n** PARTS\n**\n')
     seq.write('*Part, name=tess \n \n*Node \n')
@@ -445,7 +445,7 @@ def _poly_writer(meshname, pts_global, atts, faces, regions, boundaries, facets)
 
         _string = str(int(i+1))+' '
         for _i in xyz:
-            _loc = abs(round(_i,4))
+            _loc = round(_i,4)
             _string+='{:.4f}'.format(_loc)+' '
         poly_string+=_string+' \n'#+f'{att} \n'
 

@@ -174,12 +174,12 @@ def _decimate_faces(voro, grain_boundary, cell_cutoff):
                                              np.array(voro[adj]['original'][0:3]),
                                              cell_cutoff)
 
-                    if adj in survivors and voro[i]['original'][3] != voro[adj]['original'][3] and adj > 0:
+                    if adj in survivors and voro[i]['original'][3] != voro[adj]['original'][3] and adj >= 0:
                         new_faces.append({'adjacent_cell':adj,
                                           'vertices':vert})
                         adjbool = True
 
-                    elif adj in survivors and voro[i]['original'][3] == voro[adj]['original'][3] and not close and adj > 0:
+                    elif adj in survivors and voro[i]['original'][3] == voro[adj]['original'][3] and not close and adj >= 0:
                         new_faces.append({'adjacent_cell':adj,
                                           'vertices':vert})
                         adjbool = True

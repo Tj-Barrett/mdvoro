@@ -27,4 +27,4 @@ from mdvoro.utils.read_config import read_config
 def run_tetgen(filename, tetcmds):
     args = read_config()
     cmd = args.alias_tetgen
-    p = subprocess.run([cmd,filename,tetcmds])
+    p = subprocess.run([cmd,tetcmds,filename])

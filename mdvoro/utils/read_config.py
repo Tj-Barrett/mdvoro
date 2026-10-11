@@ -2,7 +2,7 @@ import os
 import yaml 
 
 def read_config(args=None):
-    if args==None:
+    if args is None:
         args = config_args()
     # ROOT_DIR will be utils, go up one
     ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

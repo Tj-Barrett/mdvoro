@@ -320,7 +320,7 @@ class mdutils:
         pt_array = np.array(pt_array, dtype='object')
 
         rel_pos = pt_array - pt
-        sq_dist = (np.sum(rel_pos * rel_pos, axis=-1))**2
+        sq_dist = (np.sum(rel_pos * rel_pos, axis=-1))**0.5
         min_index = np.argmin(sq_dist)
         dist = sq_dist[min_index]
 
@@ -343,7 +343,7 @@ class mdutils:
         pt_array = np.array(pt_array, dtype='object')
 
         rel_pos = pt_array - pt
-        sq_dist = (np.sum(rel_pos * rel_pos, axis=-1))**2
+        sq_dist = (np.sum(rel_pos * rel_pos, axis=-1))**0.5
         _index = sq_dist < cut
 
         min_index = []
@@ -540,10 +540,6 @@ class mdutils:
 
         if dist > cut:
             return False
-        elif dist > cut:
-            return False
-        elif dist > cut:
-            return False
         else:
             return True
 
@@ -565,10 +561,12 @@ class mdutils:
         a = np.array(a)
 
         for pln in lim_array:
-            dist = a - np.array(pln)
+            dist = np.abs(a - np.array(pln))
 
             if dist[0] < cut or dist[1] < cut or dist[2] < cut:
                 return True
+
+        return False
 
     '''
     --------------------------------------------------------------------------------

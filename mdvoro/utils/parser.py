@@ -1,7 +1,7 @@
 import argparse, os, glob, multiprocessing, sys
 import numpy as np
-from MDvoro.utils.read_config import read_config
-from MDvoro.utils.read_yaml import read_yaml
+from mdvoro.utils.read_config import read_config
+from mdvoro.utils.read_yaml import read_yaml
 
 def parser():
     parser = argparse.ArgumentParser(
