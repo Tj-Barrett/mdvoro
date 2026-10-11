@@ -170,10 +170,12 @@ For systems above 200,000, use voro++
 
         return voro
 
-    def write(self, filename, method = 'abaqus', supplemental_file = None):
+    def write(self, filename, method='abaqus', supplemental_file=None, material_name='MATERIAL'):
 
         if method == 'abaqus':
             _abaqus_writer(filename, self.mesh_args, self.seeds, self.lims, supplemental_file)
+        elif method == 'calculix':
+            _calculix_writer(filename, self.mesh_args, self.seeds, self.lims, supplemental_file, material_name)
 
 '''
 --------------------------------------------------------------------------------
@@ -356,6 +358,143 @@ def _abaqus_writer(filename, mesh_args, seeds, lims, supplemental_file):
         sf_lines = sf.readlines()
         sf.close()
 
+        for _sf_line in sf_lines:
+            seq.write(_sf_line)
+
+    seq.close()
+
+'''
+--------------------------------------------------------------------------------
+_calculix_writer
+--------------------------------------------------------------------------------
+    Writes a CalculiX-compatible flat INP file.
+
+    No *Part/*Instance/*Assembly hierarchy — all nodes and elements at the
+    global level as required by CalculiX.  The output is directly compatible
+    with periodic_inp_writer.py, which adds *EQUATION constraints and load
+    steps on top of this file.
+
+INPUTS:
+    filename        -
+    mesh_args       -
+    seeds           -
+    lims            -
+    supplemental_file -
+    material_name   - name used in *Material and *Solid Section blocks
+
+OUTPUTS:
+    none, file
+
+'''
+def _calculix_writer(filename, mesh_args, seeds, lims, supplemental_file, material_name='MATERIAL'):
+
+    xlo = lims[0][0];  xhi = lims[0][1]
+    ylo = lims[1][0];  yhi = lims[1][1]
+    zlo = lims[2][0];  zhi = lims[2][1]
+
+    points            = mesh_args[0]
+    elements          = mesh_args[1]
+    element_attributes = mesh_args[2]
+
+    seq = open(filename, 'w+')
+    seq.write('** Job name: MDvoro\n')
+    seq.write('** CalculiX flat format — compatible with periodic_inp_writer.py\n')
+    seq.write('** Run periodic_inp_writer.write_periodic_inp() on this file to add\n')
+    seq.write('** *EQUATION constraints and load steps before running ccx.\n')
+    seq.write('**\n')
+
+    # --- Nodes ---
+    seq.write('*Node\n')
+    lenprint = len(points)
+    for i in track(range(lenprint), description="{:<25}".format('Writing CalculiX : nodes')):
+        _point = points[i]
+        _x = round(_point[0], 4)
+        _y = round(_point[1], 4)
+        _z = round(_point[2], 4)
+        seq.write(str(int(i+1)) + ', ' + str(_x) + ', ' + str(_y) + ', ' + str(_z) + '\n')
+
+    # --- Elements ---
+    seq.write('**\n')
+    seq.write('*Element, type=C3D4\n')
+    lenprint = len(elements)
+    for i in track(range(lenprint), description="{:<25}".format('Writing CalculiX : elements')):
+        els = elements[i]
+        _string = str(int(i+1)) + ', '
+        for _ind in els:
+            if _ind == els[-1]:
+                _string += str(_ind) + '\n'
+            else:
+                _string += str(_ind) + ', '
+        seq.write(_string)
+
+    # --- Phase elsets (same logic as _abaqus_writer) ---
+    max_phase = 0
+    lenprint = len(seeds)
+    for i in track(range(lenprint), description="{:<25}".format('Writing CalculiX : phases')):
+        seed = seeds[i]
+        if seed['phase'] > max_phase:
+            max_phase = seed['phase']
+
+    elem_atts = np.array(element_attributes)
+
+    elset_seed  = {i: [] for i in range(0, int(len(seeds)+1))}
+    if max_phase < 1:
+        elset_phase = {1: []}
+    else:
+        elset_phase = {i: [] for i in range(1, int(max_phase+1))}
+
+    for elem_ind, elem_att in enumerate(elem_atts):
+        seed_num = int(elem_att)
+        if seed_num not in elset_phase:
+            elset_seed[1].append(elem_ind+1)
+        else:
+            elset_seed[seed_num].append(elem_ind+1)
+            phase_num = seeds[seed_num-1]['phase']
+            if phase_num < 1:
+                elset_phase[1].append(elem_ind+1)
+            else:
+                elset_phase[phase_num].append(elem_ind+1)
+
+    all_elems = []
+    lenprint = len(elset_phase)
+    for i in track(range(lenprint), description="{:<25}".format('Writing CalculiX : elsets')):
+        elms = elset_phase[i+1]
+        _len = len(elms)
+        if _len > 0:
+            seq.write('\n*Elset, elset=POLY' + str(i+1) + '\n\n')
+            for j in range(_len):
+                if j == _len-1:
+                    seq.write(str(elms[j]) + ' \n\n')
+                else:
+                    seq.write(str(elms[j]) + ', \n')
+            all_elems.extend(elms)
+
+    # EALL elset — required by periodic_inp_writer.py step output blocks
+    _len = len(all_elems)
+    seq.write('\n*Elset, elset=EALL\n\n')
+    for j in range(_len):
+        if j == _len-1:
+            seq.write(str(all_elems[j]) + ' \n\n')
+        else:
+            seq.write(str(all_elems[j]) + ', \n')
+
+    # --- Material and section ---
+    seq.write('\n*Material, name=' + material_name + '\n')
+    seq.write('** TODO: Replace with actual material properties\n')
+    seq.write('*Elastic\n')
+    seq.write('** E, nu\n')
+    seq.write('1000.0, 0.3\n')
+    seq.write('\n')
+    lenprint = len(elset_phase)
+    for i in range(lenprint):
+        elms = elset_phase[i+1]
+        if elms:
+            seq.write('*Solid Section, elset=POLY' + str(i+1) + ', material=' + material_name + '\n')
+
+    if supplemental_file is not None:
+        sf = open(supplemental_file, 'r')
+        sf_lines = sf.readlines()
+        sf.close()
         for _sf_line in sf_lines:
             seq.write(_sf_line)
 
