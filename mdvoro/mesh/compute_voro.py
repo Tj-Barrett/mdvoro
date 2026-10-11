@@ -165,7 +165,7 @@ def compute_voro(data, lims, dispersion = 1.0, radii=[], periodic=[False]*3,
         seq.close()
 
         # make correct periodic boundary assignment
-        if periodic[0] and periodic[1] and periodic[0]:
+        if periodic[0] and periodic[1] and periodic[2]:
             per = '-p'
         elif periodic[0] and periodic[1] :
             per = '-px -py'
@@ -175,10 +175,10 @@ def compute_voro(data, lims, dispersion = 1.0, radii=[], periodic=[False]*3,
             per = '-py -pz'
         elif periodic[0]:
             per = '-px'
-        elif periodic[0]:
+        elif periodic[1]:
             per = '-py'
-        elif periodic[0]:
-            per = '-py'
+        elif periodic[2]:
+            per = '-pz'
         elif sum(periodic) == 0:
             per = ''
         else:
