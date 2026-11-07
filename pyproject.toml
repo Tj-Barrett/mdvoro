@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "MDvoro"
 readme = "README.md"
-version = "2025.01"
+version = "2026.11"
 description = "A Python package for hierarchical multiscale modeling"
 license = "MIT"
 requires-python = ">=3.9"
@@ -33,10 +33,15 @@ classifiers = [
 dependencies = [
     "setuptools",
     "numpy",
-    "pyvoro",
+    "scipy",
     "rich",
     "pyyaml"
 ]
+
+[project.optional-dependencies]
+voro = ["pyvoro"]
+pytetgen = ["pyvista", "tetgen"]
+test = ["pytest"]
 
 [project.scripts]
 mdvoro = "mdvoro:__main__.main"

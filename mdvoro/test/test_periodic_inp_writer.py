@@ -1,5 +1,5 @@
 """
-Tests for mdvoro.utils.periodic_inp_writer
+Tests for fibersim.periodic_inp_writer
 
 Covers:
   - sort_surface_nodes: face/edge/corner/interior classification

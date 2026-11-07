@@ -1,7 +1,7 @@
 #
 # Configuration file for necessary applications. Place path to binary (or command) here.
 #
-tetgen: ./tetgen
-voro++: voro++
+tetgen: /home/tj-barrett/Documents/TetGen-main/tetgen
+voro++: /home/tj-barrett/Documents/voro++-0.4.6/src/voro++
 
 

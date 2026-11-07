@@ -31,7 +31,10 @@ import mdvoro
 import inspect
 from rich.progress import track
 
-from mdvoro.mesh.run_tetgen import run_tetgen
+from mdvoro.mesh.run_tetgen import run_tetgen, plc_self_intersects
+from mdvoro.mesh.poly_tools import (unique_triangulated_facets, snap_to_box, collapse_short_edges,
+                                    collapse_short_edges_periodic)
+from mdvoro.mesh.periodic_clip import clip_periodic_cells
 from mdvoro.mesh.decimate import decimate
 # from mdvoro.mesh.triangle_face import triangle_face
 from mdvoro.utils.mdutils import mdutils
@@ -41,6 +44,7 @@ class tetgen(object):
     def __init__(self):
         self.mesh_args = []
         self.seeds = []
+        self.region_phase = None
         self.lims = []
         self.cleanup_temp_files()
 
@@ -64,7 +68,17 @@ class tetgen(object):
              periodic = [False]*3, pbctype = None, tri_face=False,
              grain_boundary=False, nomesh = False, noovito=True,
              reduced_ovito=True, decimate_cutoff = None, query=None, tetcmds = '',
-             n_workers=None):
+             n_workers=None, min_edge=None, clip_periodic=False):
+        '''min_edge: merge PLC vertices joined by shorter edges before meshing
+        (near-degenerate Voronoi vertices give sliver tetrahedra); None keeps all.
+        clip_periodic: voro is a fully periodic tessellation of lims; clip it to the
+        box (periodic_clip) and keep opposite box faces identical, so the mesh has
+        matching boundary nodes for periodic BCs. Mesh it with TetGen -Y (no
+        Steiner points on facets), or the box faces lose their match'''
+        self.clip_periodic = clip_periodic
+        if clip_periodic:
+            voro = clip_periodic_cells(voro, lims)
+            periodic = [False] * 3               # the pieces are a non-periodic tessellation of the box
 
         if pbctype == 'np' or pbctype == 'pbc':
             pbctype = pbctype
@@ -107,7 +121,7 @@ class tetgen(object):
             exit()
 
         if isinstance(tetcmds, str):
-            if tetcmds[0]=='-':
+            if tetcmds.startswith('-'):
                 tetcmds=tetcmds[1:]
         else:
             print(f'Error : Tetcmds is not a string. Check and make sure it matches tetgen inputs.')
@@ -141,6 +155,10 @@ For systems above 200,000, use voro++
         #                   clip = False,
         #                   max_area = 0.5)
 
+        # TetGen regions: one per connected same-phase set of cells, computed on
+        # the full tessellation (decimate drops interior cells and edits faces)
+        regions, self.region_phase = _phase_regions(voro, decimate_cutoff)
+
         voro, phases, qn = decimate(voro,
                                 lims,
                                 grain_boundary=grain_boundary,
@@ -148,7 +166,7 @@ For systems above 200,000, use voro++
                                 query = query,
                                 n_workers = n_workers)
 
-        pts_global, atts, faces, regions, boundaries, vols, self.seeds, facets, _voro = _voro_reader(self, voro, qn)
+        pts_global, atts, faces, _, boundaries, vols, self.seeds, facets, _voro = _voro_reader(self, voro, qn)
 
         meshname = 'temp'
 
@@ -160,7 +178,40 @@ For systems above 200,000, use voro++
             else:
                 ovito_writer(meshname+'.dump', _voro, lims)
 
-        _poly_writer(meshname, pts_global, atts, faces, regions, boundaries, facets)
+        # collapsing edges can fold a facet through another: TetGen reports the
+        # intersecting facets; keep their vertices from merging and try again
+        frozen = set()
+        for attempt in range(20):
+            collapse = _poly_writer(meshname, pts_global, atts, faces, regions, boundaries, facets,
+                                    min_edge=min_edge, lims=lims, frozen=frozen, periodic=clip_periodic)
+            if not min_edge:
+                break
+            bad = plc_self_intersects(meshname+'.poly')
+            if len(bad) == 0:
+                break
+            new_xyz, (rep, keep) = collapse
+            if np.isnan(bad).any():
+                min_edge = None                  # no location reported: do not collapse
+                continue
+            hit = [int(np.argmin(np.linalg.norm(new_xyz - b, axis=1))) for b in bad]
+            reps = [int(keep[k]) for k in hit]   # new vertex -> its cluster representative
+            added = set(np.nonzero(np.isin(rep, reps))[0].tolist()) - frozen
+            print(f'PLC self-intersects at {len(bad)} vertices: keeping {len(added)} vertices unmerged')
+            if not added:
+                min_edge = None
+                continue
+            frozen |= added
+        else:
+            min_edge = None
+            _poly_writer(meshname, pts_global, atts, faces, regions, boundaries, facets,
+                         lims=lims if clip_periodic else None, periodic=clip_periodic)
+        self.min_edge = min_edge
+        # TetGen's region attributes number the connected phase regions, which
+        # only exist here: keep their phases so the mesh can be used on its own
+        with open(meshname+'.regions', 'w') as f:
+            f.write('# region attribute, phase\n')
+            for att in sorted(self.region_phase):
+                f.write(f"{att} {self.region_phase[att]}\n")
 
         # fcts = _sep_poly_writer(meshname, pts_global, atts, faces, regions, boundaries, facets)
         if not nomesh:
@@ -173,9 +224,91 @@ For systems above 200,000, use voro++
     def write(self, filename, method='abaqus', supplemental_file=None, material_name='MATERIAL'):
 
         if method == 'abaqus':
-            _abaqus_writer(filename, self.mesh_args, self.seeds, self.lims, supplemental_file)
+            _abaqus_writer(filename, self.mesh_args, self.seeds, self.lims, supplemental_file,
+                           region_phase=self.region_phase)
         elif method == 'calculix':
-            _calculix_writer(filename, self.mesh_args, self.seeds, self.lims, supplemental_file, material_name)
+            _calculix_writer(filename, self.mesh_args, self.seeds, self.lims, supplemental_file, material_name,
+                             region_phase=self.region_phase)
+
+
+def _phase_regions(voro, cell_cutoff):
+    """TetGen region points: an attribute per connected set of same-phase cells.
+
+    Cells are connected through shared faces of cells with the same phase whose
+    seeds are within cell_cutoff (farther ones are neighbours across a periodic
+    boundary, kept apart as in decimate). Every cell's seed, which lies strictly
+    inside the cell, is a region point with its set's attribute: the PLC can
+    split a set where it is joined only by a tiny face that collapse_short_edges
+    closes, and each piece still needs a point. TetGen floods a region from its
+    first point and only locates the others, so each set's first point is the
+    seed of its largest cell with no neighbour of another phase.
+
+    Returns (regions, region_phase): rows [n, x, y, z, attribute, -1.] for the
+    .poly region list, and {attribute: phase}.
+    """
+    n = len(voro)
+    parent = np.arange(n)
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    seed = np.array([c['original'][0:3] for c in voro], dtype=float)
+    phase = [c['original'][3] for c in voro]
+    mixed = np.zeros(n, dtype=bool)          # has a neighbour of another phase
+    for i, cell in enumerate(voro):
+        for face in cell['faces']:
+            if len(face) == 0:
+                continue
+            j = face['adjacent_cell']
+            if j < 0 or j >= n:
+                continue
+            if phase[i] != phase[j]:
+                mixed[i] = True
+            elif j > i and np.linalg.norm(seed[i] - seed[j]) <= cell_cutoff:
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[max(ri, rj)] = min(ri, rj)
+
+    best = {}
+    for i in range(n):
+        r = find(i)
+        key = (not mixed[i], voro[i]['volume'])
+        if r not in best or key > best[r][0]:
+            best[r] = (key, i)
+
+    regions, region_phase, att_of = [], {}, {}
+    for att, r in enumerate(sorted(best), start=1):
+        i = best[r][1]
+        x, y, z = seed[i]
+        regions.append([att, round(x, 6), round(y, 6), round(z, 6), att, -1.])
+        region_phase[att] = phase[i]
+        att_of[r] = att
+    first = {i for _, i in best.values()}
+    for i in range(n):
+        if i not in first:
+            x, y, z = seed[i]
+            regions.append([len(regions) + 1, round(x, 6), round(y, 6), round(z, 6), att_of[find(i)], -1.])
+    return regions, region_phase
+
+
+def _phase_elsets(element_attributes, seeds, region_phase=None):
+    """{phase elset number: [element ids]} from TetGen region attributes.
+
+    region_phase maps attribute -> phase (tetgen.mesh); without it, attribute
+    a is cell a-1 of seeds. Amorphous (phase < 1) and unknown attributes go
+    to elset 1.
+    """
+    if region_phase is None:
+        region_phase = {i + 1: seeds[i]['phase'] for i in range(len(seeds))}
+    max_phase = max([1] + [int(p) for p in region_phase.values()])
+    elset_phase = {i: [] for i in range(1, max_phase + 1)}
+    for elem_ind, elem_att in enumerate(np.asarray(element_attributes)):
+        p = region_phase.get(int(elem_att), 0)
+        elset_phase[int(p) if p >= 1 else 1].append(elem_ind + 1)
+    return elset_phase
 
 '''
 --------------------------------------------------------------------------------
@@ -192,7 +325,7 @@ OUTPUTS:
     none, file
 
 '''
-def _abaqus_writer(filename, mesh_args, seeds, lims, supplemental_file):
+def _abaqus_writer(filename, mesh_args, seeds, lims, supplemental_file, region_phase=None):
 
     # limits
     xlo = lims[0][0]
@@ -259,40 +392,7 @@ def _abaqus_writer(filename, mesh_args, seeds, lims, supplemental_file):
 
     del els, _string
 
-    max_phase = 0
-    lenprint = len(seeds)
-    for i in track(range(lenprint),  description= "{:<25}".format('Writing Abaqus file : handling seeds')):
-        seed = seeds[i]
-        if seed['phase'] > max_phase:
-            max_phase = seed['phase']
-
-    elem_atts = np.array(element_attributes)
-
-    # Print Seeds Elset
-    elset_seed = {i: [] for i in range(0,int(len(seeds)+1)) }
-
-    # Phase Sets
-    if max_phase < 1:
-        elset_phase = {1: []}
-    else:
-        elset_phase = {i: [] for i in range(1,int(max_phase+1)) }
-
-    for elem_ind, elem_att in enumerate(elem_atts):
-        seed_num = int(elem_att)
-        # seed
-        if seed_num not in elset_phase:
-            # if not there, assume it is amorphous
-            elset_seed[1].append(elem_ind+1)
-        else:
-            elset_seed[seed_num].append(elem_ind+1)
-            # phase
-            phase_num = seeds[seed_num-1]['phase']
-            if phase_num < 1:
-                elset_phase[1].append(elem_ind+1)
-            else:
-                elset_phase[phase_num].append(elem_ind+1)
-
-    n_elsets = len(elset_seed)
+    elset_phase = _phase_elsets(element_attributes, seeds, region_phase)
 
     lenprint = len(elset_phase)
     for i in track(range(lenprint),  description= "{:<25}".format('Writing Abaqus file : phase data')):
@@ -325,7 +425,7 @@ def _abaqus_writer(filename, mesh_args, seeds, lims, supplemental_file):
 
     '''
     Abaqus doesn't support *equation using node sets  _      _
-        despite exporting it in their own inp files    \(ツ)/
+        despite exporting it in their own inp files    \\(ツ)/
     '''
 
     seq.write('\n')
@@ -386,7 +486,8 @@ OUTPUTS:
     none, file
 
 '''
-def _calculix_writer(filename, mesh_args, seeds, lims, supplemental_file, material_name='MATERIAL'):
+def _calculix_writer(filename, mesh_args, seeds, lims, supplemental_file, material_name='MATERIAL',
+                     region_phase=None):
 
     xlo = lims[0][0];  xhi = lims[0][1]
     ylo = lims[1][0];  yhi = lims[1][1]
@@ -428,32 +529,7 @@ def _calculix_writer(filename, mesh_args, seeds, lims, supplemental_file, materi
         seq.write(_string)
 
     # --- Phase elsets (same logic as _abaqus_writer) ---
-    max_phase = 0
-    lenprint = len(seeds)
-    for i in track(range(lenprint), description="{:<25}".format('Writing CalculiX : phases')):
-        seed = seeds[i]
-        if seed['phase'] > max_phase:
-            max_phase = seed['phase']
-
-    elem_atts = np.array(element_attributes)
-
-    elset_seed  = {i: [] for i in range(0, int(len(seeds)+1))}
-    if max_phase < 1:
-        elset_phase = {1: []}
-    else:
-        elset_phase = {i: [] for i in range(1, int(max_phase+1))}
-
-    for elem_ind, elem_att in enumerate(elem_atts):
-        seed_num = int(elem_att)
-        if seed_num not in elset_phase:
-            elset_seed[1].append(elem_ind+1)
-        else:
-            elset_seed[seed_num].append(elem_ind+1)
-            phase_num = seeds[seed_num-1]['phase']
-            if phase_num < 1:
-                elset_phase[1].append(elem_ind+1)
-            else:
-                elset_phase[phase_num].append(elem_ind+1)
+    elset_phase = _phase_elsets(element_attributes, seeds, region_phase)
 
     all_elems = []
     lenprint = len(elset_phase)
@@ -552,9 +628,27 @@ OUTPUTS:
     none, file
 
 '''
-def _poly_writer(meshname, pts_global, atts, faces, regions, boundaries, facets):
+def _poly_writer(meshname, pts_global, atts, faces, regions, boundaries, facets, min_edge=None, lims=None,
+                 frozen=(), periodic=False):
+    '''periodic: lims is a periodic box whose opposite faces carry the same polygons
+    (periodic_clip); edge collapse and triangulation then keep them identical'''
 
     from numpy import abs
+
+    if lims is not None:
+        # box-face vertices exactly on the faces, so that they round alike
+        pts_global = snap_to_box(pts_global, lims)
+    collapse = None
+    if min_edge:
+        # near-degenerate Voronoi vertices: merge them, or TetGen makes slivers
+        n_before = len(pts_global)
+        collapse_fn = collapse_short_edges_periodic if periodic else collapse_short_edges
+        faces, pts_global, keep, src, rep = collapse_fn([list(f) for f in faces], pts_global,
+                                                        min_edge, lims, frozen)
+        boundaries = [boundaries[i] for i in src]
+        atts = [atts[i] for i in keep]
+        collapse = (np.round(pts_global, 4), (rep, keep))
+        print(f'Collapsed edges shorter than {min_edge}: {n_before} -> {len(pts_global)} vertices')
 
     seq = open(meshname+'.poly', 'w+')
 
@@ -621,19 +715,21 @@ def _poly_writer(meshname, pts_global, atts, faces, regions, boundaries, facets)
     # faces = ff
     # boundaries= tt
 
-    poly_string+= '\n# Facets, boundary marker \n'
-    poly_string+= str(len(faces))+' 1 \n'
-    poly_string+= '# Facets \n'
+    # every interface is collected once per adjacent cell, and merged/rounded
+    # vertices leave polygons slightly non-planar or non-convex: write each facet
+    # once, as triangles (duplicates and self-overlapping polygons crash TetGen)
+    tris, marks, n_unique = unique_triangulated_facets(faces, boundaries, pts_global,
+                                                       lims=lims if periodic else None)
 
-    lenprint = len(faces)
+    poly_string+= '\n# Facets, boundary marker \n'
+    poly_string+= str(len(tris))+' 1 \n'
+    poly_string+= f'# {len(faces)} polygons, {n_unique} distinct, written as triangles \n'
+
+    lenprint = len(tris)
     for i in track(range(lenprint),  description= "{:<25}".format('Writing .poly file : facet data')):
-        fct = faces[i]
-        bound = boundaries[i]
-        _facets = f'1 # Facet : '+str(i+1)+'\n'+str(len(fct))+' '
-        for fc in fct:
-            _facets+= str(fc+1)+' '
-        _facets +=f' {bound} \n'
-        poly_string+= _facets
+        a, b, c = tris[i]
+        # <#polygons> <#holes> <boundary marker>, then <#corners> <corners>
+        poly_string+= f'1 0 {marks[i]}\n3 {a+1} {b+1} {c+1}\n'
 
     seq.write(poly_string)
 
@@ -652,6 +748,7 @@ def _poly_writer(meshname, pts_global, atts, faces, regions, boundaries, facets)
 
     seq.write(poly_string)
     seq.close()
+    return collapse
 
 '''
 --------------------------------------------------------------------------------
@@ -1243,18 +1340,14 @@ def _voro_reader(self, voro, qn):
               'original':voro[f]['original']}
 
         _tot_pts = []
-        _vvs = set()
-        _vv = []
+        _vv = {}                            # global vertex -> local index
         for _j, face in enumerate(facets[f]['fcts']):
             _vts = []
             for vt in face:
-                if vt not in _vvs:
-                    _vts.append(len(_tot_pts))
+                if vt not in _vv:
+                    _vv[vt] = len(_tot_pts)
                     _tot_pts.append(pts_global[vt])
-                    _vvs.add(vt)
-                    _vv.append(vt)
-                else:
-                    _vts.append(_vv.index(vt))
+                _vts.append(_vv[vt])
 
             _v['faces'].append({'vertices':_vts,
                                 'adjacent_cell':_j})
@@ -1263,96 +1356,8 @@ def _voro_reader(self, voro, qn):
 
         _voro.append(_v)
 
-    '''
-    Figure out if there are any disconnected areas. Need to recursively build out faces and check if there are any left at the end.
-
-    Still a bug here. Tetgen still creates tetrahedrals that do not belong. If we keep the region count to zero it correctly identifies all.
-
-    We can work around by ranking by decending volume, but thats not a good solution.
-
-    Actual workaround seems to be just labeling crystals. Something happens with centroids that fall outside the volume
-
-    '''
+    # region points come from _phase_regions; node attributes are not used
     sub_regions = []
-    # new_atts = atts
     new_atts = np.zeros((len(pts_global)))
-    total_regions = 0
 
-    from random import randint
-
-    for c_cell_num, cell_data in enumerate(voro):
-
-        all_vts = []
-        for c_face_num, c_face_data in enumerate(cell_data['faces']):
-
-            c_local_vts = c_face_data['vertices']
-            for i, vt in enumerate(c_local_vts):
-                ind = _new_pts[pts_dict[(c_cell_num, vt)]]
-                all_vts.append(ind)
-
-        # build connectivity table
-        bonds = []
-        for c_face_num, c_face_data in enumerate(cell_data['faces']):
-            for _i in range(0,len(c_face_data['vertices'])-1):
-                if _i == 0:
-                    a = c_face_data['vertices'][0]
-                    inda = _new_pts[pts_dict[(c_cell_num, a)]]
-                    b = c_face_data['vertices'][-1]
-                    indb = _new_pts[pts_dict[(c_cell_num, b)]]
-                    bonds.append([inda,indb])
-                    bonds.append([indb,inda])
-
-                a = c_face_data['vertices'][_i]
-                inda = _new_pts[pts_dict[(c_cell_num, a)]]
-                b = c_face_data['vertices'][_i+1]
-                indb = _new_pts[pts_dict[(c_cell_num, b)]]
-                bonds.append([inda,indb])
-                bonds.append([indb,inda])
-
-        # doubled so only do one
-        all_vts = list(set(all_vts))
-        lav = len(all_vts)
-        popped = []
-
-        while len(all_vts) > 0:
-            r = randint(0,len(all_vts)-1)
-            vt = all_vts[r]
-
-            total_regions += 1
-            pairs = []
-            done = []
-
-            # pairs.append(vt)
-            for b in bonds:
-                if vt == b[0] and b not in done :
-                    pairs.append(b[1])
-                    done.append(b)
-            # recursively build pair list
-            for p in pairs:
-                # print(pairs)
-                for b in bonds:
-                    if p == b[0] and b not in done :
-                        pairs.append(b[1])
-                        done.append(b)
-
-            # done, pop
-            for p in set(pairs):
-                if p not in popped:
-                    all_vts.pop(all_vts.index(p))
-                    popped.append(p)
-                    new_atts[p]=total_regions
-
-            _x = []
-            _y = []
-            _z = []
-            for p in set(pairs):
-                # new_atts[p]=total_regions
-                _x.append(pts_global[p][0])
-                _y.append(pts_global[p][1])
-                _z.append(pts_global[p][2])
-
-            if len(popped) == lav:
-                sub_regions.append([total_regions, round(np.mean(_x),4) , round(np.mean(_y),4), round(np.mean(_z),4), total_regions, -1.])
-
-    # print(sub_regions)
     return pts_global, new_atts, faces, sub_regions, boundaries, vols, seeds, facets, _voro

@@ -24,6 +24,8 @@ OUTPUTS:
 # import pyvoro
 import os
 import math
+import subprocess
+from mdvoro.utils.read_config import read_config
 import numpy as np
 
 def compute_voro(data, lims, dispersion = 1.0, radii=[], periodic=[False]*3,
@@ -201,7 +203,18 @@ def compute_voro(data, lims, dispersion = 1.0, radii=[], periodic=[False]*3,
         %n adjacent cell number of face
         '''
 
-        os.system(f'voro++ {per} -o {radical} -n {xlen} {ylen} {zlen} -c "%i %q %v %w %P %s %n %t %f" {xlo} {xhi} {ylo} {yhi} {zlo} {zhi} temp.voro')
+        # the voro++ binary configured in config.yaml (it used to be called from PATH)
+        voropp = read_config().alias_voropp or 'voro++'
+        cmd = [voropp, *per.split(), '-o', *([radical] if radical else []),
+               '-n', str(xlen), str(ylen), str(zlen),
+               '-c', '%i %q %v %w %P %s %n %t %f',
+               *(str(v) for v in (xlo, xhi, ylo, yhi, zlo, zhi)), 'temp.voro']
+        try:
+            run = subprocess.run(cmd, capture_output=True, text=True)
+        except FileNotFoundError:
+            raise FileNotFoundError(f'voro++ not found at "{voropp}": set the voro++ entry of mdvoro/config.yaml')
+        if run.returncode != 0 or not os.path.isfile('temp.voro.vol'):
+            raise RuntimeError(f'voro++ failed (rc={run.returncode}): {run.stderr.strip()[:500]}')
 
         f = open('temp.voro.vol', 'r')
         nodes = f.readlines()

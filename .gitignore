@@ -1,0 +1,32 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# test and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mdvoro / voro++ / TetGen scratch files (tetgen.mesh writes temp.*)
+temp.*
+*.voro
+*.voro.vol
+*.1.node
+*.1.ele
+*.1.face
+*.1.edge
+*.1.neigh
+*.1.smesh
+*.1.vtk
+
+# editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

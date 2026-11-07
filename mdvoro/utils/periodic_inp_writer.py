@@ -280,10 +280,13 @@ def build_periodic_pairs(nodes, zones):
 def write_periodic_inp(input_inp, output_inp, tol=1e-5,
                         displacement_strain=0.01,
                         load_cases=None,
-                        material_name='PVA'):
+                        material_name='PVA',
+                        n_steps=1,
+                        uniaxial=False,
+                        nlgeom=False):
     """
     Read a NEPER INP file, append periodic equation constraints and
-    six homogenisation load steps, write to output_inp.
+    load steps, write to output_inp.
 
     Reference point nodes are added immediately after the *Node block
     with IDs max_node+1, max_node+2, max_node+3 for RP-X, RP-Y, RP-Z.
@@ -298,6 +301,21 @@ def write_periodic_inp(input_inp, output_inp, tol=1e-5,
     displacement_strain : macroscopic strain applied per load case
     load_cases : list subset of ['XX','YY','ZZ','XY','YZ','XZ']
     material_name : material already defined in the INP
+    n_steps    : number of equal increments per load step (default 1).
+                 When > 1, *STATIC uses (1/n_steps, 1.0) so CalculiX
+                 ramps the load linearly and writes output at each increment.
+    uniaxial   : bool (default False).
+                 When True, the lateral Poisson DOFs of the reference point
+                 nodes are left unconstrained for normal load cases so the
+                 material can contract freely transverse to the loading axis.
+                 Use this for a true uniaxial tension/compression test.
+                 When False (default), all lateral RP DOFs are fixed to zero,
+                 which is the correct homogenisation convention for extracting
+                 one column of the stiffness tensor at a time.
+    nlgeom     : bool (default False).
+                 When True, writes *STEP, NLGEOM to enable geometric
+                 nonlinearity (large deformations). Requires n_steps > 1
+                 for convergence at strains above ~1%.
     """
     if load_cases is None:
         load_cases = ['XX', 'YY', 'ZZ', 'XY', 'YZ', 'XZ']
@@ -332,6 +350,13 @@ def write_periodic_inp(input_inp, output_inp, tol=1e-5,
     for i in range(1, 27):
         if zones[i]:
             print('  Zone {:2d}: {:4d} nodes'.format(i, len(zones[i])))
+
+    # Zone 26 is the single corner at (xlo, ylo, zlo).
+    # Pinning it in all 3 DOFs removes translational rigid body motion
+    # without constraining the macroscopic deformation field.
+    if not zones[26]:
+        raise RuntimeError('No corner node found at (xlo, ylo, zlo) — cannot pin RBM.')
+    pin_node = zones[26][0]
 
     # --- Build periodic pairs ---
     print('Matching periodic node pairs...')
@@ -381,36 +406,60 @@ def write_periodic_inp(input_inp, output_inp, tol=1e-5,
 
     print('Equations written: {}'.format(eq_count))
 
-    # --- Build *NSET for RP nodes ---
+    # --- Build *NSET for RP nodes and pin node ---
     nset_lines = [
         '\n*NSET, NSET=RP-X\n{:d}\n'.format(rp_X),
         '*NSET, NSET=RP-Y\n{:d}\n'.format(rp_Y),
         '*NSET, NSET=RP-Z\n{:d}\n'.format(rp_Z),
+        '** Corner node at (xlo,ylo,zlo) — pins rigid body translation\n',
+        '*NSET, NSET=PIN\n{:d}\n'.format(pin_node),
+        '*BOUNDARY\nPIN,1,3,0.0\n',
     ]
+    print('Pin node: {:d}  (corner at xlo,ylo,zlo)'.format(pin_node))
 
     # --- Build load step blocks ---
     step_lines = []
     for lc in load_cases:
         step_lines.append('\n** Load case: {}\n'.format(lc))
-        step_lines.append('*STEP\n')
-        step_lines.append('*STATIC\n')
+        step_lines.append('*STEP, NLGEOM\n' if nlgeom else '*STEP\n')
+        if n_steps > 1:
+            inc = 1.0 / n_steps
+            step_lines.append('*STATIC\n{:.6f}, 1.0\n'.format(inc))
+        else:
+            step_lines.append('*STATIC\n')
 
         if lc == 'XX':
             d = displacement_strain * xlen
             step_lines += _bc_lines('RP-X', u1=d,  u2=0.0, u3=0.0)
-            step_lines += _bc_lines('RP-Y', u1=0.0, u2=0.0, u3=0.0)
-            step_lines += _bc_lines('RP-Z', u1=0.0, u2=0.0, u3=0.0)
+            if uniaxial:
+                # YY and ZZ Poisson strains are free; suppress shear only
+                step_lines += _bc_lines_partial('RP-Y', {1: 0.0, 3: 0.0})
+                step_lines += _bc_lines_partial('RP-Z', {1: 0.0, 2: 0.0})
+            else:
+                step_lines += _bc_lines('RP-Y', u1=0.0, u2=0.0, u3=0.0)
+                step_lines += _bc_lines('RP-Z', u1=0.0, u2=0.0, u3=0.0)
 
         elif lc == 'YY':
             d = displacement_strain * ylen
-            step_lines += _bc_lines('RP-X', u1=0.0, u2=0.0, u3=0.0)
+            if uniaxial:
+                step_lines += _bc_lines_partial('RP-X', {2: 0.0, 3: 0.0})
+            else:
+                step_lines += _bc_lines('RP-X', u1=0.0, u2=0.0, u3=0.0)
             step_lines += _bc_lines('RP-Y', u1=0.0, u2=d,   u3=0.0)
-            step_lines += _bc_lines('RP-Z', u1=0.0, u2=0.0, u3=0.0)
+            if uniaxial:
+                step_lines += _bc_lines_partial('RP-Z', {1: 0.0, 2: 0.0})
+            else:
+                step_lines += _bc_lines('RP-Z', u1=0.0, u2=0.0, u3=0.0)
 
         elif lc == 'ZZ':
             d = displacement_strain * zlen
-            step_lines += _bc_lines('RP-X', u1=0.0, u2=0.0, u3=0.0)
-            step_lines += _bc_lines('RP-Y', u1=0.0, u2=0.0, u3=0.0)
+            if uniaxial:
+                # XX and YY Poisson strains are free; suppress shear only
+                step_lines += _bc_lines_partial('RP-X', {2: 0.0, 3: 0.0})
+                step_lines += _bc_lines_partial('RP-Y', {1: 0.0, 3: 0.0})
+            else:
+                step_lines += _bc_lines('RP-X', u1=0.0, u2=0.0, u3=0.0)
+                step_lines += _bc_lines('RP-Y', u1=0.0, u2=0.0, u3=0.0)
             step_lines += _bc_lines('RP-Z', u1=0.0, u2=0.0, u3=d)
 
         elif lc == 'XY':
@@ -435,10 +484,11 @@ def write_periodic_inp(input_inp, output_inp, tol=1e-5,
             step_lines += _bc_lines('RP-Y', u1=0.0, u2=0.0, u3=0.0)
             step_lines += _bc_lines('RP-Z', u1=e,   u2=0.0, u3=0.0)
 
-        step_lines.append('*NODE PRINT, NSET=RP-X\nU\n')
-        step_lines.append('*NODE PRINT, NSET=RP-Y\nU\n')
-        step_lines.append('*NODE PRINT, NSET=RP-Z\nU\n')
-        step_lines.append('*EL PRINT, ELSET=EALL\nS,E\n')
+        step_lines.append('*NODE PRINT, NSET=RP-X\nU, RF\n')
+        step_lines.append('*NODE PRINT, NSET=RP-Y\nU, RF\n')
+        step_lines.append('*NODE PRINT, NSET=RP-Z\nU, RF\n')
+        step_lines.append('*NODE FILE\nU\n')
+        step_lines.append('*EL FILE, ELSET=EALL\nS,E\n')
         step_lines.append('*END STEP\n')
 
     # --- Assemble and write output ---
@@ -464,6 +514,21 @@ def _bc_lines(nset, u1, u2, u3):
         '{},2,2,{:.6e}\n'.format(nset, u2),
         '{},3,3,{:.6e}\n'.format(nset, u3),
     ]
+
+
+def _bc_lines_partial(nset, dofs):
+    """Format *BOUNDARY lines for only the specified DOFs.
+
+    Parameters
+    ----------
+    nset : str   node set name
+    dofs : dict  {dof_int: value}  e.g. {2: 0.0, 3: 0.0}
+                 Omitted DOFs are left free (no *BOUNDARY applied).
+    """
+    lines = ['*BOUNDARY\n']
+    for dof in sorted(dofs):
+        lines.append('{},{},{},{:.6e}\n'.format(nset, dof, dof, dofs[dof]))
+    return lines
 
 
 # ===================================================================
