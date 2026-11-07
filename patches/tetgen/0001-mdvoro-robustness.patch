@@ -1,0 +1,335 @@
+From: tj-barrett <barrett.t@northeastern.edu>
+Date: Wed, 21 Oct 2026 20:28:06 -0400
+Subject: [PATCH] Robustness fixes for meshing Voronoi PLCs from MD microstructures
+
+Against TetGen 1.6.1, https://github.com/TetGen/TetGen (mirror of
+codeberg.org/TetGen/TetGen) commit 5203ac3540d5092163c1bce61737f75a21703e1b
+(2026-10-08). The upstream test suite (328 tests) passes with the patch.
+
+Large mdvoro PLCs (non-planar facets, many short edges, 50-60 sigma RVEs)
+crashed or corrupted memory in -pA and -pYA runs:
+
+1. sscoutsegment(): NULL neighbours at 3 sites, and a bound on the walk
+   step (non-planar facets could walk forever).
+2. sinsertvertex(): drop boundary edges whose outer face joined the
+   cavity sC(p). They left a dangling bond and corrupted the memory pool.
+3. flip32(): a 3-to-2 flip of an edge in a facet flips its two subfaces;
+   undoing it with flip23() (flipnm_post with nn == 2, and the flip-back in
+   remove_ndelaunay_edge()) recreated the edge but not the subfaces, which
+   was the -pA improve_mesh segfault. New tetgenmesh::unflip22() flips them
+   back and copies the region attributes into the restored tet; flipnm()
+   records the excluded link vertex in abtets[2]. A terminatetetgen(2)
+   guard on subface counts 1 or 3 is kept as a fallback.
+4. check_segments() (-C): NULL dereference.
+
+---
+diff --git a/tetgen.cxx b/tetgen.cxx
+index fc61dac..4f02e92 100644
+--- a/tetgen.cxx
++++ b/tetgen.cxx
+@@ -7598,6 +7598,115 @@ void tetgenmesh::flip23(triface* fliptets, int hullflag, flipconstraints *fc)
+   recenttet = fliptets[0];
+ }
+ 
++//============================================================================//
++//                                                                            //
++// unflip22()    Undo the 2-to-2 flip of subfaces done by a 3-to-2 flip.      //
++//                                                                            //
++// flip32() of an edge [e,d] which is in a facet also flips its two subfaces  //
++// [e,d,p] and [e,d,q] into [p,q,e] and [p,q,d].  A flip23() which undoes     //
++// this 3-to-2 flip recreates the edge [e,d] but not the subfaces, i.e., it   //
++// leaves them at [p,q].  This routine flips them back to [e,d].              //
++//                                                                            //
++// 'fliptets' are the three tets [e,d,*,*] returned by flip23(). 'r' is the   //
++// link vertex of [e,d] which is not in the two subfaces.                     //
++//                                                                            //
++//============================================================================//
++
++void tetgenmesh::unflip22(triface* fliptets, point r, flipconstraints *fc)
++{
++  triface topface, botface, spintet, neightet;
++  face flipfaces[2], checksh;
++  point pe, pd, px, py, pv;
++  int t1ver;
++  int i, j, k;
++
++  // Find the tet [e,d,p,q], its faces [d,p,q] and [e,p,q] are subfaces.
++  for (i = 0; i < 3; i++) {
++    px = apex(fliptets[i]);
++    py = oppo(fliptets[i]);
++    if ((px == r) || (py == r)) continue;
++    eorgoppo(fliptets[i], topface); // [d,p,q], opposite to e.
++    edestoppo(fliptets[i], botface); // [e,p,q], opposite to d.
++    if (issubface(topface) && issubface(botface)) break;
++  }
++  if (i == 3) {
++    // The subfaces are not found. Report a bug.
++    terminatetetgen(this, 2);
++  }
++  pe = org(fliptets[i]);
++  pd = dest(fliptets[i]);
++  tspivot(topface, flipfaces[0]);
++  tspivot(botface, flipfaces[1]);
++
++  // Detach the two subfaces from the tets at both of their sides.
++  for (j = 0; j < 2; j++) {
++    stdissolve(flipfaces[j]);
++  }
++  tsdissolve(topface);
++  fsym(topface, neightet);
++  tsdissolve(neightet);
++  tsdissolve(botface);
++  fsym(botface, neightet);
++  tsdissolve(neightet);
++
++  // Flip [p,q,d] and [q,p,e] into [d,e,q] and [e,d,p].
++  for (k = 0; k < 3; k++) {
++    if (sapex(flipfaces[0]) == pd) break;
++    senextself(flipfaces[0]);
++  }
++  for (k = 0; k < 3; k++) {
++    if (sapex(flipfaces[1]) == pe) break;
++    senextself(flipfaces[1]);
++  }
++  if ((sapex(flipfaces[0]) != pd) || (sapex(flipfaces[1]) != pe)) {
++    terminatetetgen(this, 2);
++  }
++  flip22(flipfaces, 0, fc->chkencflag);
++
++  // Bond the two new subfaces to the tets at the faces [e,d,p], [e,d,q].
++  for (j = 0; j < 2; j++) {
++    for (k = 0; k < 3; k++) {
++      if ((sapex(flipfaces[j]) != pe) && (sapex(flipfaces[j]) != pd)) break;
++      senextself(flipfaces[j]);
++    }
++    pv = sapex(flipfaces[j]);
++    if (sorg(flipfaces[j]) != pe) {
++      sesymself(flipfaces[j]); // [e,d,v]
++    }
++    spintet = fliptets[i]; // [e,d,p,q]
++    for (k = 0; k < 3; k++) {
++      if (apex(spintet) == pv) break;
++      fnextself(spintet);
++    }
++    if ((apex(spintet) != pv) || (sorg(flipfaces[j]) != pe) ||
++        (sdest(flipfaces[j]) != pd)) {
++      terminatetetgen(this, 2);
++    }
++    tspivot(spintet, checksh);
++    if (checksh.sh != NULL) {
++      // There is already a subface. Report a bug.
++      terminatetetgen(this, 2);
++    }
++    tsbond(spintet, flipfaces[j]);
++    fsymself(spintet);
++    sesymself(flipfaces[j]);
++    tsbond(spintet, flipfaces[j]);
++  }
++
++  // flip23() gave the three tets the attributes of one old tet. The subfaces
++  //   separate [e,d,p,q] from the other two: it is in the region across its
++  //   faces [d,p,q] and [e,p,q], which are no longer subfaces.
++  fsym(topface, neightet);
++  if (!ishulltet(neightet)) {
++    for (j = 0; j < numelemattrib; j++) {
++      setelemattribute(fliptets[i].tet, j, elemattribute(neightet.tet, j));
++    }
++    if (b->varvolume) {
++      setvolumebound(fliptets[i].tet, volumebound(neightet.tet));
++    }
++  }
++}
++
+ //============================================================================//
+ //                                                                            //
+ // flip32()    Perform a 3-to-2 flip (edge-to-face flip).                     //
+@@ -7705,6 +7814,12 @@ void tetgenmesh::flip32(triface* fliptets, int hullflag, flipconstraints *fc)
+         spivot = i;
+       }
+     }
++    if ((scount == 1) || (scount == 3)) {
++      // Edge [e,d] is a facet boundary, it cannot be flipped away. This
++      //   happens when an unflip in flipnm_post() meets a surface edge
++      //   changed by a nested flip. flip22() below would use a NULL face.
++      terminatetetgen(this, 2);
++    }
+   }
+ 
+   // Re-use fliptets[0] and fliptets[1].
+@@ -8357,6 +8472,7 @@ int tetgenmesh::flipnm(triface* abtets, int n, int level, int abedgepivot,
+   triface fliptets[3], spintet, flipedge;
+   triface *tmpabtets, *parytet;
+   point pa, pb, pc, pd, pe, pf;
++  point sflipvertex = NULL; // Set if a 3-to-2 flip also flips subfaces.
+   REAL ori;
+   int hullflag, hulledgeflag;
+   int reducflag, rejflag;
+@@ -8939,6 +9055,11 @@ int tetgenmesh::flipnm(triface* abtets, int n, int level, int abedgepivot,
+             edgepivot = j;
+           }
+         }
++        if (nn == 2) {
++          // The 3-to-2 flip also flips two subfaces. Remember the link
++          //   vertex not in them, unflip22() needs it to undo the flip.
++          sflipvertex = apex(abtets[edgepivot]);
++        }
+         if (nn == 1) {
+           // Found only 1 subface containing this edge. This can happen in 
+           //   the boundary recovery phase. The neighbor subface is not yet 
+@@ -8979,6 +9100,10 @@ int tetgenmesh::flipnm(triface* abtets, int n, int level, int abedgepivot,
+       if (!rejflag) {
+         // Do flip: [a,b] => [c,d,e]
+         flip32(abtets, hullflag, fc);
++        // 'abtets[2]' is not used anymore. Save the surface flip in it, so
++        //   flipnm_post() can undo it (NULL if no subface was flipped).
++        abtets[2].tet = (tetrahedron *) sflipvertex;
++        abtets[2].ver = 0;
+         if (fc->remove_ndelaunay_edge) {
+           if (level == 0) {
+             // It is the desired removing edge. Check if we have improved
+@@ -8987,6 +9112,9 @@ int tetgenmesh::flipnm(triface* abtets, int n, int level, int abedgepivot,
+                 (fabs(fc->tetprism_vol_sum) < fc->bak_tetprism_vol)) {
+               // No improvement! flip back: [c,d,e] => [a,b].
+               flip23(abtets, hullflag, fc);
++              if (sflipvertex != NULL) {
++                unflip22(abtets, sflipvertex, fc);
++              }
+               // Increase the element counter -- They are in cavity.
+               for (j = 0; j < 3; j++) {
+                 increaseelemcounter(abtets[j]); 
+@@ -9069,8 +9197,16 @@ int tetgenmesh::flipnm_post(triface* abtets, int n, int nn, int abedgepivot,
+     // 'abtets[0]' is [c,d,e,b] or [#,#,#,b].
+     // 'abtets[1]' is [d,c,e,a] or [#,#,#,a].
+     if (fc->unflip) {
++      // flipnm() saved in 'abtets[2]' whether the subfaces at [a,b] were
++      //   flipped, too. Read it before flip23() overwrites it.
++      point sflipvertex = (point) abtets[2].tet;
+       // Do a 2-to-3 flip to recover the edge [a,b]. There may be hull tets.
+       flip23(abtets, 1, fc);
++      if (sflipvertex != NULL) {
++        // Recover the two subfaces at [a,b], or later unflips meet a
++        //   different surface mesh (and flip32() a subface edge).
++        unflip22(abtets, sflipvertex, fc);
++      }
+       if (fc->collectnewtets) {
+         // Pop up new (flipped) tets from the stack.
+         if (abedgepivot == 0) {
+@@ -12913,6 +13049,23 @@ int tetgenmesh::sinsertvertex(point insertpt, face *searchsh, face *splitseg,
+     } // j
+   } // i
+ 
++  // A subface may be tested from several edges of sC(p). incircle3d() uses
++  //   the edge, so it can reject the subface from one edge (recording that
++  //   edge as a boundary edge) and accept it from another. Such an edge is
++  //   interior to sC(p): drop it, otherwise the new subface is bonded to a
++  //   subface which is deleted below.
++  j = 0;
++  for (i = 0; i < caveshbdlist->objects; i++) {
++    parysh = (face *) fastlookup(caveshbdlist, i);
++    if (!isshsubseg(*parysh)) {
++      spivot(*parysh, neighsh);
++      if ((neighsh.sh != NULL) && smarktested(neighsh)) continue;
++    }
++    * (face *) fastlookup(caveshbdlist, j) = *parysh;
++    j++;
++  }
++  caveshbdlist->objects = j;
++
+ 
+   // Creating new subfaces.
+   for (i = 0; i < caveshbdlist->objects; i++) {
+@@ -13754,9 +13907,22 @@ enum tetgenmesh::interresult tetgenmesh::sscoutsegment(face *searchsh,
+   }
+   len = distance(startpt, endpt);
+ 
++  // Every step keeps 'startpt' as origin, so a walk can not visit more
++  //   subfaces than exist. Inconsistent orientations (non-planar facet)
++  //   can otherwise make it cycle around 'startpt' forever.
++  long walksteps = 0l;
++
+   // Search an edge in 'searchsh' on the path of this segment.
+   while (1) {
+ 
++    if (++walksteps > subfaces->items + 2l) {
++      if (reporterrorflag) {
++        printf("PLC Error:  Cannot find a path for segment [%d, %d] in facet #%d.\n",
++               pointmark(startpt), pointmark(endpt), shellmark(*searchsh));
++      }
++      return ACROSSEDGE;
++    }
++
+     pb = sdest(*searchsh);
+     if (pb == endpt) {
+       dir = SHAREEDGE; // Found!
+@@ -13848,6 +14014,16 @@ enum tetgenmesh::interresult tetgenmesh::sscoutsegment(face *searchsh,
+           }
+         }
+         spivotself(neighsh);
++        if (neighsh.sh == NULL) {
++          // Both sides at 'startpt' are hull edges: the segment leaves
++          //   the facet (e.g. a non-planar facet).
++          if (reporterrorflag) {
++            printf("PLC Error:  Segment [%d, %d] leaves facet #%d at vertex %d.\n",
++                   pointmark(startpt), pointmark(endpt), shellmark(*searchsh),
++                   pointmark(startpt));
++          }
++          return ACROSSEDGE;
++        }
+         if (sdest(neighsh) != pc) sesymself(neighsh);
+         *searchsh = neighsh;
+       }
+@@ -13874,6 +14050,15 @@ enum tetgenmesh::interresult tetgenmesh::sscoutsegment(face *searchsh,
+           }
+         }
+         spivot(*searchsh, neighsh);
++        if (neighsh.sh == NULL) {
++          // Both sides at 'startpt' are hull edges (see above).
++          if (reporterrorflag) {
++            printf("PLC Error:  Segment [%d, %d] leaves facet #%d at vertex %d.\n",
++                   pointmark(startpt), pointmark(endpt), shellmark(*searchsh),
++                   pointmark(startpt));
++          }
++          return ACROSSEDGE;
++        }
+         if (sorg(neighsh) != pb) sesymself(neighsh);
+         senext(neighsh, *searchsh);
+       }
+@@ -13926,6 +14111,16 @@ enum tetgenmesh::interresult tetgenmesh::sscoutsegment(face *searchsh,
+     }
+     // Flip edge [b, c], queue unflipped edges (for Delaunay checks).
+     spivot(flipshs[0], flipshs[1]);
++    if (flipshs[1].sh == NULL) {
++      // Edge [b, c] is on the hull of the facet triangulation: the segment
++      // leaves the facet (e.g. a non-planar facet). It cannot be flipped.
++      if (reporterrorflag) {
++        printf("PLC Error:  Segment [%d, %d] leaves facet #%d at edge [%d, %d].\n",
++               pointmark(startpt), pointmark(endpt), shellmark(*searchsh),
++               pointmark(pb), pointmark(pc));
++      }
++      return dir; // ACROSSEDGE
++    }
+     if (sorg(flipshs[1]) != sdest(flipshs[0])) sesymself(flipshs[1]);
+     flip22(flipshs, 1, 0);
+     // The flip may create an inverted triangle, check it.
+@@ -34496,8 +34691,7 @@ int tetgenmesh::check_segments()
+                        pointmark(apex(spintet)), pointmark(oppo(spintet)),
+                        (uintptr_t) spintet.tet, spintet.ver);
+                 horrors++;
+-              }
+-              if (checkseg.sh != sseg.sh) {
++              } else if (checkseg.sh != sseg.sh) {
+                 printf("  !! !! Wrong seg (%d, %d) at tet (%d, %d, %d, %d)\n",
+                        pointmark(sorg(checkseg)), pointmark(sdest(checkseg)),
+                        pointmark(org(spintet)), pointmark(dest(spintet)),
+diff --git a/tetgen.h b/tetgen.h
+index c4a1433..517d2e0 100644
+--- a/tetgen.h
++++ b/tetgen.h
+@@ -1870,6 +1870,7 @@ public:
+   // The elementary flips.
+   void flip23(triface*, int, flipconstraints* fc);
+   void flip32(triface*, int, flipconstraints* fc);
++  void unflip22(triface*, point, flipconstraints* fc);
+   void flip41(triface*, int, flipconstraints* fc);
+ 
+   // A generalized edge flip.

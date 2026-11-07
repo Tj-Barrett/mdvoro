@@ -21,7 +21,7 @@ MDvoro enables the creation and analysis of complex material microstructures thr
 - scipy
 - rich
 - pyyaml
-- TetGen ([external](https://github.com/TetGen/TetGen))
+- TetGen ([external](https://github.com/TetGen/TetGen)); build it with [patches/tetgen](patches/tetgen/README.md) for large PLCs
 - voro++ ([external](https://github.com/chr1shr/voro))
 - pothos ([external](https://github.com/Tj-Barrett/pothos), optional, but designed for use with this project)
 
