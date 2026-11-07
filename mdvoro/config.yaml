@@ -1,7 +1,11 @@
 #
-# Configuration file for necessary applications. Place path to binary (or command) here.
+# External binaries. These defaults look the commands up on PATH.
 #
-tetgen: /home/tj-barrett/Documents/TetGen-main/tetgen
-voro++: /home/tj-barrett/Documents/voro++-0.4.6/src/voro++
-
-
+# Do not put machine-specific paths here. Override them, highest priority last, in
+#   ~/.config/mdvoro/config.yaml       (per user)
+#   mdvoro/config.local.yaml           (per checkout, git-ignored)
+#   MDVORO_TETGEN / MDVORO_VOROPP      (environment)
+# with the same keys. Use the patched TetGen (patches/tetgen) for large PLCs.
+#
+tetgen: tetgen
+voro++: voro++

@@ -51,6 +51,7 @@ Homepage = "https://github.com/tj-barrett/mdvoro"
 
 [tool.setuptools]
 package-data = {"*" = ["*"]}
+exclude-package-data = {"*" = ["config.local.yaml"]}
 
 [tool.setuptools.packages.find]
 include = ["mdvoro*"]

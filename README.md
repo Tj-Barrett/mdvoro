@@ -41,11 +41,27 @@ pip install -e .
 
 ## Configuration
 
-Modify the `config.yaml` file in the mdvoro package directory for your system:
+`mdvoro/config.yaml` sets the commands for TetGen and voro++. By default
+both are looked up on `PATH`:
 
 ```yaml
-tetgen: "./tetgen"      # Path or alias to tetgen executable
-voro++: "voro++"        # Path or alias to voro++ executable
+tetgen: tetgen
+voro++: voro++
+```
+
+Put machine-specific paths in an override instead of editing that file. Later
+sources take priority:
+
+1. `~/.config/mdvoro/config.yaml`: per user, also works for non-editable installs
+2. `mdvoro/config.local.yaml`: per checkout, git-ignored
+3. `MDVORO_TETGEN`, `MDVORO_VOROPP`: environment variables
+
+Each override uses the same keys and may set only one of them. `~` and `$VARS`
+are expanded. For example, `mdvoro/config.local.yaml`:
+
+```yaml
+tetgen: ~/src/TetGen/build/tetgen
+voro++: ~/src/voro++-0.4.6/src/voro++
 ```
 
 ## Usage

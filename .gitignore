@@ -30,3 +30,6 @@ temp.*
 .idea/
 *.swp
 .DS_Store
+
+# machine-specific binary paths (see mdvoro/config.yaml)
+mdvoro/config.local.yaml

@@ -212,7 +212,7 @@ def compute_voro(data, lims, dispersion = 1.0, radii=[], periodic=[False]*3,
         try:
             run = subprocess.run(cmd, capture_output=True, text=True)
         except FileNotFoundError:
-            raise FileNotFoundError(f'voro++ not found at "{voropp}": set the voro++ entry of mdvoro/config.yaml')
+            raise FileNotFoundError(f'voro++ not found at "{voropp}": set voro++ in mdvoro/config.local.yaml, ~/.config/mdvoro/config.yaml or MDVORO_VOROPP')
         if run.returncode != 0 or not os.path.isfile('temp.voro.vol'):
             raise RuntimeError(f'voro++ failed (rc={run.returncode}): {run.stderr.strip()[:500]}')
 
