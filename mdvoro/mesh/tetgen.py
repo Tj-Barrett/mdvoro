@@ -31,10 +31,26 @@ import mdvoro
 import inspect
 from rich.progress import track
 
+# decimals of the PLC and mesh coordinates: also the key that merges the copies of a
+# Voronoi vertex shared by several cells. 6 needs voro++ with full-precision output
+# (patches/voropp); stock voro++ prints ~6 significant digits, and mesh() then falls
+# back to 4 (coarser rounding folds facets through each other in some boxes, finer
+# rounding leaves near-zero-volume slivers the solvers cannot factor)
+DECIMALS = 6
+_DEC = 4          # in effect for the current mesh() call
+
+
+def _full_precision(voro, n=200):
+    '''True if the cell vertices carry more than 6 significant digits'''
+    v = np.concatenate([np.ravel(c['vertices']) for c in voro[:n] if len(c['vertices'])])
+    v = v[np.abs(v) > 1e-3]
+    return len(v) > 0 and np.mean([abs(x - float(f'{x:.6g}')) > 1e-12 * abs(x) for x in v[:5000]]) > 0.5
+
 from mdvoro.mesh.run_tetgen import run_tetgen, plc_self_intersects
 from mdvoro.mesh.poly_tools import (unique_triangulated_facets, snap_to_box, collapse_short_edges,
-                                    collapse_short_edges_periodic)
-from mdvoro.mesh.periodic_clip import clip_periodic_cells
+                                    collapse_short_edges_periodic, collapse_short_edges_translational,
+                                    unique_triangulated_facets_translational)
+from mdvoro.mesh.periodic_clip import clip_periodic_cells, whole_periodic_cells
 from mdvoro.mesh.decimate import decimate
 # from mdvoro.mesh.triangle_face import triangle_face
 from mdvoro.utils.mdutils import mdutils
@@ -68,17 +84,41 @@ class tetgen(object):
              periodic = [False]*3, pbctype = None, tri_face=False,
              grain_boundary=False, nomesh = False, noovito=True,
              reduced_ovito=True, decimate_cutoff = None, query=None, tetcmds = '',
-             n_workers=None, min_edge=None, clip_periodic=False):
+             n_workers=None, min_edge=None, clip_periodic=False, min_edge_box=None, clip_snap=None,
+             whole_periodic=False):
         '''min_edge: merge PLC vertices joined by shorter edges before meshing
         (near-degenerate Voronoi vertices give sliver tetrahedra); None keeps all.
+        min_edge_box (periodic): an interior vertex this close to a box-surface vertex
+        merges into it (the box vertex stays), e.g. an interface vertex just off a face.
         clip_periodic: voro is a fully periodic tessellation of lims; clip it to the
         box (periodic_clip) and keep opposite box faces identical, so the mesh has
         matching boundary nodes for periodic BCs. Mesh it with TetGen -Y (no
-        Steiner points on facets), or the box faces lose their match'''
+        Steiner points on facets), or the box faces lose their match.
+        clip_snap (clip_periodic): Voronoi vertices this close to a box plane move onto it
+        before the cut (periodic_clip snap), so the cut makes no short edges.
+        whole_periodic: voro is a fully periodic tessellation of lims, meshed as it is: the
+        domain is the union of the whole cells (a jagged fundamental domain), its boundary
+        the cell faces shared across the periodic boundary, in pairs of translates kept
+        identical (poly_tools translation classes). Mesh it with TetGen -Y'''
+        if clip_periodic and whole_periodic:
+            raise ValueError('clip_periodic and whole_periodic exclude each other')
+        global _DEC
+        _DEC = DECIMALS if DECIMALS <= 4 or _full_precision(voro) else 4
+        if _DEC != DECIMALS:
+            print(f'WARNING: voro++ output has ~6 significant digits: writing {_DEC} decimals instead of '
+                  f'{DECIMALS} (patch voro++ with mdvoro/patches/voropp for full precision)')
+        self.decimals = _DEC
         self.clip_periodic = clip_periodic
         if clip_periodic:
-            voro = clip_periodic_cells(voro, lims)
+            voro = clip_periodic_cells(voro, lims, snap=clip_snap)
             periodic = [False] * 3               # the pieces are a non-periodic tessellation of the box
+        self.clip_snap = clip_snap if clip_periodic else None
+        self.whole_periodic = whole_periodic
+        translational = None
+        if whole_periodic:
+            voro = whole_periodic_cells(voro, lims)
+            periodic = [False] * 3
+            translational = [l[1] - l[0] for l in lims]
 
         if pbctype == 'np' or pbctype == 'pbc':
             pbctype = pbctype
@@ -179,11 +219,19 @@ For systems above 200,000, use voro++
                 ovito_writer(meshname+'.dump', _voro, lims)
 
         # collapsing edges can fold a facet through another: TetGen reports the
-        # intersecting facets; keep their vertices from merging and try again
+        # intersecting facets; keep their vertices from merging and try again.
+        # Periodic boxes merge box-edge vertices along their edges too: voro++
+        # round-off leaves clusters 1e-4 apart there, slivers at best and
+        # mismatched periodic copies at worst. Collapsing nothing at all is the
+        # last resort.
         frozen = set()
+        merge_box_edges = bool(clip_periodic)
+        self.plc_intersections = np.zeros((0, 3))
         for attempt in range(20):
             collapse = _poly_writer(meshname, pts_global, atts, faces, regions, boundaries, facets,
-                                    min_edge=min_edge, lims=lims, frozen=frozen, periodic=clip_periodic)
+                                    min_edge=min_edge, lims=lims, frozen=frozen, periodic=clip_periodic,
+                                    merge_box_edges=merge_box_edges, min_edge_box=min_edge_box if min_edge else None,
+                                    translational=translational)
             if not min_edge:
                 break
             bad = plc_self_intersects(meshname+'.poly')
@@ -204,8 +252,16 @@ For systems above 200,000, use voro++
         else:
             min_edge = None
             _poly_writer(meshname, pts_global, atts, faces, regions, boundaries, facets,
-                         lims=lims if clip_periodic else None, periodic=clip_periodic)
+                         lims=lims if clip_periodic else None, periodic=clip_periodic, translational=translational)
+        if not min_edge:                         # collapse given up: is the plain PLC clean?
+            bad = plc_self_intersects(meshname+'.poly')
+            if len(bad):
+                self.plc_intersections = bad
+                print(f'WARNING: the PLC still self-intersects at {len(bad)} vertices without collapsing '
+                      f'(e.g. {np.round(bad[0], _DEC).tolist()}); TetGen will reject it')
         self.min_edge = min_edge
+        self.min_edge_box = min_edge_box if min_edge else None
+        self.merge_box_edges = merge_box_edges
         # TetGen's region attributes number the connected phase regions, which
         # only exist here: keep their phases so the mesh can be used on its own
         with open(meshname+'.regions', 'w') as f:
@@ -363,9 +419,9 @@ def _abaqus_writer(filename, mesh_args, seeds, lims, supplemental_file, region_p
     for i in track(range(lenprint),  description= "{:<25}".format('Writing Abaqus file : xyz data')):
         _point = points[i]
         # fix E-17 instances with rounding
-        _x = round(_point[0], 4)
-        _y = round(_point[1], 4)
-        _z = round(_point[2], 4)
+        _x = round(_point[0], _DEC)
+        _y = round(_point[1], _DEC)
+        _z = round(_point[2], _DEC)
         _b = int(_point[3])
         seq.write(str(int(i+1))+', '+str(_x)+', ' \
                                     +str(_y)+', ' \
@@ -436,11 +492,11 @@ def _abaqus_writer(filename, mesh_args, seeds, lims, supplemental_file, region_p
     seq.write('*INSTANCE, name=TESS, part=TESS\n')
     seq.write('*END INSTANCE\n')
     # x
-    seq.write('*Node\n1, '+str(round(xhi,4))+', '+str(round(ymid,4))+', '+str(round(zmid,4))+'\n')
+    seq.write('*Node\n1, '+str(round(xhi, _DEC))+', '+str(round(ymid, _DEC))+', '+str(round(zmid, _DEC))+'\n')
     # y
-    seq.write('*Node\n2, '+str(round(xmid,4))+', '+str(round(yhi,4))+', '+str(round(zmid,4))+'\n')
+    seq.write('*Node\n2, '+str(round(xmid, _DEC))+', '+str(round(yhi, _DEC))+', '+str(round(zmid, _DEC))+'\n')
     # z
-    seq.write('*Node\n3, '+str(round(xmid,4))+', '+str(round(ymid,4))+', '+str(round(zhi,4))+'\n')
+    seq.write('*Node\n3, '+str(round(xmid, _DEC))+', '+str(round(ymid, _DEC))+', '+str(round(zhi, _DEC))+'\n')
     # 0
     seq.write('*Node\n4,  0.0, 0.0, 0.0 \n')
 
@@ -509,9 +565,9 @@ def _calculix_writer(filename, mesh_args, seeds, lims, supplemental_file, materi
     lenprint = len(points)
     for i in track(range(lenprint), description="{:<25}".format('Writing CalculiX : nodes')):
         _point = points[i]
-        _x = round(_point[0], 4)
-        _y = round(_point[1], 4)
-        _z = round(_point[2], 4)
+        _x = round(_point[0], _DEC)
+        _y = round(_point[1], _DEC)
+        _z = round(_point[2], _DEC)
         seq.write(str(int(i+1)) + ', ' + str(_x) + ', ' + str(_y) + ', ' + str(_z) + '\n')
 
     # --- Elements ---
@@ -629,9 +685,14 @@ OUTPUTS:
 
 '''
 def _poly_writer(meshname, pts_global, atts, faces, regions, boundaries, facets, min_edge=None, lims=None,
-                 frozen=(), periodic=False):
+                 frozen=(), periodic=False, merge_box_edges=False, min_edge_box=None, translational=None):
     '''periodic: lims is a periodic box whose opposite faces carry the same polygons
-    (periodic_clip); edge collapse and triangulation then keep them identical'''
+    (periodic_clip); edge collapse and triangulation then keep them identical.
+    translational: box lengths of whole periodic cells (tetgen.mesh whole_periodic); faces
+    that are translates of each other stay so (poly_tools translation classes)'''
+    ttol = 3 * 10.0 ** -_DEC                     # translates agree to the written decimals
+    if translational is not None:
+        lims = None
 
     from numpy import abs
 
@@ -642,13 +703,38 @@ def _poly_writer(meshname, pts_global, atts, faces, regions, boundaries, facets,
     if min_edge:
         # near-degenerate Voronoi vertices: merge them, or TetGen makes slivers
         n_before = len(pts_global)
-        collapse_fn = collapse_short_edges_periodic if periodic else collapse_short_edges
-        faces, pts_global, keep, src, rep = collapse_fn([list(f) for f in faces], pts_global,
-                                                        min_edge, lims, frozen)
+        if translational is not None:
+            faces, pts_global, keep, src, rep = collapse_short_edges_translational(
+                [list(f) for f in faces], np.round(np.asarray(pts_global, float), _DEC), min_edge, translational,
+                frozen, tol=ttol)
+        elif periodic:
+            faces, pts_global, keep, src, rep = collapse_short_edges_periodic(
+                [list(f) for f in faces], pts_global, min_edge, lims, frozen, merge_box_edges=merge_box_edges,
+                min_edge_box=min_edge_box)
+        else:
+            faces, pts_global, keep, src, rep = collapse_short_edges([list(f) for f in faces], pts_global,
+                                                                     min_edge, lims, frozen)
         boundaries = [boundaries[i] for i in src]
         atts = [atts[i] for i in keep]
-        collapse = (np.round(pts_global, 4), (rep, keep))
+        collapse = (np.round(pts_global, _DEC), (rep, keep))
         print(f'Collapsed edges shorter than {min_edge}: {n_before} -> {len(pts_global)} vertices')
+
+    if translational is not None:
+        tris, marks, n_unique = unique_triangulated_facets_translational(
+            faces, boundaries, np.round(np.asarray(pts_global, float), _DEC), translational, tol=ttol)
+    else:
+        tris, marks, n_unique = unique_triangulated_facets(faces, boundaries, pts_global,
+                                                           lims=lims if periodic else None)
+    # vertices no triangle uses (their faces degenerated): TetGen jettisons them and renumbers
+    # the rest, which breaks every PLC index -> mesh node map downstream (fold flips)
+    used = np.zeros(len(pts_global), bool)
+    used[np.array(tris, dtype=int).ravel()] = True
+    if not used.all():
+        new_id = np.cumsum(used) - 1
+        pts_global = [p for p, u in zip(pts_global, used) if u]
+        atts = [a for a, u in zip(atts, used) if u]
+        tris = [tuple(int(new_id[v]) for v in t) for t in tris]
+        print(f'Dropped {int((~used).sum())} PLC vertices no facet uses')
 
     seq = open(meshname+'.poly', 'w+')
 
@@ -665,8 +751,8 @@ def _poly_writer(meshname, pts_global, atts, faces, regions, boundaries, facets,
 
         _string = str(int(i+1))+' '
         for _i in xyz:
-            _loc = round(_i,4)
-            _string+='{:.4f}'.format(_loc)+' '
+            _loc = round(_i, _DEC)
+            _string+=f'{_loc:.{_DEC}f} '
         poly_string+=_string+' \n'#+f'{att} \n'
 
     seq.write(poly_string)
@@ -718,8 +804,6 @@ def _poly_writer(meshname, pts_global, atts, faces, regions, boundaries, facets,
     # every interface is collected once per adjacent cell, and merged/rounded
     # vertices leave polygons slightly non-planar or non-convex: write each facet
     # once, as triangles (duplicates and self-overlapping polygons crash TetGen)
-    tris, marks, n_unique = unique_triangulated_facets(faces, boundaries, pts_global,
-                                                       lims=lims if periodic else None)
 
     poly_string+= '\n# Facets, boundary marker \n'
     poly_string+= str(len(tris))+' 1 \n'
@@ -1035,9 +1119,9 @@ def _voro_reader(self, voro, qn):
             # seed data of this cell
             seed_data = c_cell_data['original']
             rn = c_cell_num+1
-            rx = round(seed_data[0],4)
-            ry = round(seed_data[1],4)
-            rz = round(seed_data[2],4)
+            rx = round(seed_data[0], _DEC)
+            ry = round(seed_data[1], _DEC)
+            rz = round(seed_data[2], _DEC)
             phase = seed_data[3]
 
             seeds[c_cell_num] = {'seed':rn,
@@ -1089,9 +1173,9 @@ def _voro_reader(self, voro, qn):
 
                                     # tuples hash
                                     # if the rounding is too coarse, some points may merge introducing holes to the mesh
-                                    pts_global.append(tuple([round(pt[0],4),
-                                                             round(pt[1],4),
-                                                             round(pt[2],4)]))
+                                    pts_global.append(tuple([round(pt[0], _DEC),
+                                                             round(pt[1], _DEC),
+                                                             round(pt[2], _DEC)]))
                                     atts.append(seeds[c_cell_num]['phase'])
 
                                     pts_seen.append({c_cell_num:key})
@@ -1154,9 +1238,9 @@ def _voro_reader(self, voro, qn):
 
                                 # tuples hash
                                 # if the rounding is too coarse, some points may merge introducing holes to the mesh
-                                pts_global.append(tuple([round(pt[0],4),
-                                                         round(pt[1],4),
-                                                         round(pt[2],4)]))
+                                pts_global.append(tuple([round(pt[0], _DEC),
+                                                         round(pt[1], _DEC),
+                                                         round(pt[2], _DEC)]))
                                 atts.append(seeds[c_cell_num]['phase'])
 
                                 pts_seen.append({c_cell_num:key})
@@ -1268,7 +1352,7 @@ def _voro_reader(self, voro, qn):
                     adjs.append(c_cell_num)
 
         total_regions += 1
-        regions.append([total_regions, round(np.mean(_x),4) , round(np.mean(_y),4), round(np.mean(_z),4), c_cell_num, -1.])
+        regions.append([total_regions, round(np.mean(_x), _DEC) , round(np.mean(_y), _DEC), round(np.mean(_z), _DEC), c_cell_num, -1.])
 
     clean_index = []
     clean_faces = []

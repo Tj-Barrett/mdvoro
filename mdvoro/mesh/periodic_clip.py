@@ -60,9 +60,8 @@ def _clip(P, faces, d, value, keep_below, tag, eps):
 
     out, on_plane, has_cap = [], set(), False
     for loop, adj in faces:
-        if all(dist[v] == 0 for v in loop):    # face already on the plane: it is the cap
+        if all(dist[v] == 0 for v in loop):    # face already on the plane: (part of) the cap
             out.append((list(loop), tag))
-            has_cap = True
             continue
         new = []
         for a, b in zip(loop, loop[1:] + loop[:1]):
@@ -76,6 +75,10 @@ def _clip(P, faces, d, value, keep_below, tag, eps):
                 on_plane.add(v)
         if len(new) >= 3:
             out.append((new, adj))
+    caps = _cap_loops(out)                   # the open rim of the clipped surface, reversed: right for
+    if caps is not None:                     # non-convex sections and partial on-plane faces too (snapped vertices)
+        out += [(cap, tag) for cap in caps]
+        has_cap = True
     if not has_cap and len(on_plane) >= 3:
         on_plane = sorted(on_plane)
         Q = np.array([pts[v] for v in on_plane])
@@ -89,6 +92,33 @@ def _clip(P, faces, d, value, keep_below, tag, eps):
     used = sorted({v for loop, _ in out for v in loop})
     new_id = {v: k for k, v in enumerate(used)}
     return np.array([pts[v] for v in used]), [([new_id[v] for v in loop], adj) for loop, adj in out]
+
+
+def _cap_loops(faces):
+    '''loops closing the open rim of oriented faces [(loop, adj)]: the edges with no reverse,
+    reversed and chained ([] if closed). None if the rim does not chain into simple loops.'''
+    E = set()
+    for loop, _ in faces:
+        for a, b in zip(loop, loop[1:] + loop[:1]):
+            E.add((a, b))
+    nxt = {}
+    for a, b in E:
+        if (b, a) not in E:
+            if b in nxt:
+                return None                  # rim pinched at a vertex
+            nxt[b] = a
+    loops = []
+    while nxt:
+        start = next(iter(nxt))
+        loop, v = [start], nxt.pop(start)
+        while v != start:
+            if v not in nxt:
+                return None
+            loop.append(v)
+            v = nxt.pop(v)
+        if len(loop) >= 3:
+            loops.append(loop)
+    return loops
 
 
 def _normal(Q):
@@ -108,14 +138,47 @@ def _volume(P, faces):
     return vol / 6.0
 
 
-def shared_vertices(voro, lims, tol):
+def snap_to_planes(V, lo, L, snap, allowed=None):
+    '''V (n, 3) with every coordinate within snap of a periodic box plane lo + k L moved onto it
+    (allowed: optional (n, 3) mask of the coordinates that may move)'''
+    V = np.array(V, float)
+    W = np.mod(V - lo, L)
+    down = W < snap
+    up = W > L - snap
+    if allowed is not None:
+        down &= allowed
+        up &= ~down & allowed
+    V = np.where(down, V - W, np.where(up, V + (L - W), V))
+    k = np.round((V - lo) / L)
+    return np.where(down | up, lo + k * L, V)        # exactly on the plane
+
+
+def whole_periodic_cells(voro, lims, eps=None):
+    '''A fully periodic voro++ tessellation for meshing as it is (no box cut): the copies of
+    every Voronoi vertex unified (shared_vertices), so the faces that two cells share across
+    the periodic boundary are exact translates. decimate keeps those faces (their seeds are
+    farther apart than its cell_cutoff): they become the mesh boundary.'''
+    L = np.array([l[1] - l[0] for l in lims], float)
+    if eps is None:
+        eps = 1e-4 + 1e-9 * L.max()
+    verts = shared_vertices(voro, lims, eps)
+    out = []
+    for cell, P in zip(voro, verts):
+        c = dict(cell)
+        c['vertices'] = P.tolist()
+        out.append(c)
+    return out
+
+
+def shared_vertices(voro, lims, tol, labels=False):
     '''cell vertices with every copy of a Voronoi vertex at one position.
 
     voro++ prints vertices with ~6 significant digits, so the copies of a vertex
     shared by several cells differ slightly. Cutting an edge that is nearly
     parallel to a box plane amplifies the difference, and the cut points of
     neighbouring pieces no longer coincide. Copies within tol (periodically) are
-    moved to their mean. Returns a list of (n_i, 3) arrays.
+    moved to their mean. Returns a list of (n_i, 3) arrays (labels: and a list of the
+    cluster label of every vertex, one array per cell).
     '''
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
@@ -141,14 +204,38 @@ def shared_vertices(voro, lims, tol):
     Y = mean[lab]
     Y += L * np.round((W - Y) / L)
     Y += X - W                                   # back to the unwrapped coordinates of the cell
-    out, k = [], 0
+    out, labs, k = [], [], 0
     for v in V:
         out.append(Y[k:k + len(v)])
+        labs.append(lab[k:k + len(v)])
         k += len(v)
-    return out
+    return (out, labs) if labels else out
 
 
-def clip_periodic_cells(voro, lims, eps=None, min_volume=1e-12):
+def _snap_allowed(voro, verts, labs, lo, L, snap):
+    '''per cell, (n_i, 3) masks: a vertex coordinate may snap to a box plane only if no Voronoi
+    edge-neighbour of the vertex is within snap of a plane of that axis too. Snapping both
+    ends of an edge lays the edge, and with it faces, flat on the plane, where they overlap
+    the cut of the cells around them (self-intersecting PLC); snapping clusters vertex by
+    vertex, nearest first, inverts cells (c15: pieces overfill the box by 0.3-5 %).'''
+    n = 1 + max(int(l.max()) for l in labs if len(l))
+    near = np.zeros((n, 3), bool)
+    for P, l in zip(verts, labs):
+        W = np.mod(P - lo, L)
+        near[l] = (W < snap) | (W > L - snap)
+    blocked = np.zeros((n, 3), bool)
+    for cell, l in zip(voro, labs):
+        for f in cell['faces']:
+            loop = f['vertices']
+            for a, b in zip(loop, loop[1:] + loop[:1]):
+                la, lb = l[a], l[b]
+                if la != lb:
+                    both = near[la] & near[lb]
+                    blocked[la] |= both
+                    blocked[lb] |= both
+    return [near[l] & ~blocked[l] for l in labs]
+
+def clip_periodic_cells(voro, lims, eps=None, min_volume=1e-12, snap=None):
     '''Clip a fully periodic voro++ tessellation of the box lims to the box.
 
     voro: cells as returned by compute_voro(..., periodic=[True]*3, method='voro++')
@@ -157,6 +244,12 @@ def clip_periodic_cells(voro, lims, eps=None, min_volume=1e-12):
     shift an integer 3-vector in box lengths. 'original' is the seed moved by the
     shift, or the piece's vertex centroid when that seed is outside the box (it
     is used as a TetGen region point and must lie inside the piece).
+
+    snap: Voronoi vertices within this distance of a box plane (periodically) move onto
+    it before the cut, every copy alike, unless an edge-neighbour is within snap of a plane
+    of the same axis too (_snap_allowed: snapping both self-intersects the PLC or inverts cells).
+    A snapped vertex leaves no short cut edge or thin wedge at the box face; the cells
+    change by at most snap along the box normals.
     '''
     lo = np.array([l[0] for l in lims], float)
     hi = np.array([l[1] for l in lims], float)
@@ -164,7 +257,10 @@ def clip_periodic_cells(voro, lims, eps=None, min_volume=1e-12):
     if eps is None:                            # the box tolerance of poly_tools (4-decimal output)
         eps = 1e-4 + 1e-9 * L.max()
     seeds = np.array([c['original'][:3] for c in voro], float)
-    verts = shared_vertices(voro, lims, eps)
+    verts, labs = shared_vertices(voro, lims, eps, labels=True)
+    if snap:
+        allowed = _snap_allowed(voro, verts, labs, lo, L, snap)
+        verts = [snap_to_planes(v, lo, L, snap, a) for v, a in zip(verts, allowed)]
     pieces, index = [], {}
     shifts = [np.array(s) for s in itertools.product((-1, 0, 1), repeat=3)]
     for i, cell in enumerate(voro):
@@ -193,6 +289,10 @@ def clip_periodic_cells(voro, lims, eps=None, min_volume=1e-12):
             pieces.append({'original': [*(seed if inside else P.mean(axis=0)), cell['original'][3]],
                            'volume': vol, 'vertices': P.tolist(), 'faces': faces, 'source': (i, tuple(s))})
 
+    total = sum(p['volume'] for p in pieces)
+    if abs(total / np.prod(L) - 1) > (1e-3 if snap else 1e-6):   # snapped faces are not planar: the two
+                                                                 # cells of a face fan it differently
+        raise RuntimeError(f'clipped pieces fill {total:.9g} of the box volume {np.prod(L):.9g}')
     # adjacent cell ids -> adjacent piece ids: the neighbour j of cell i is the
     # image of seed j nearest to seed i; seen from piece (i, s) it is piece (j, s + t)
     for piece in pieces:

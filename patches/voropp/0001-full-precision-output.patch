@@ -1,0 +1,167 @@
+--- a/src/cell.cc	2013-10-17 13:54:13.000000000 -0400
++++ b/src/cell.cc	2026-11-07 16:14:34.590599402 -0500
+@@ -1488,13 +1488,13 @@
+ 	int i,j,k;double *ptsp=pts,*pt2;
+ 	char posbuf1[128],posbuf2[128];
+ 	for(i=0;i<p;i++,ptsp+=3) {
+-		sprintf(posbuf1,"%g,%g,%g",x+*ptsp*0.5,y+ptsp[1]*0.5,z+ptsp[2]*0.5);
++		sprintf(posbuf1,"%.17g,%.17g,%.17g",x+*ptsp*0.5,y+ptsp[1]*0.5,z+ptsp[2]*0.5);
+ 		fprintf(fp,"sphere{<%s>,r}\n",posbuf1);
+ 		for(j=0;j<nu[i];j++) {
+ 			k=ed[i][j];
+ 			if(k<i) {
+ 				pt2=pts+3*k;
+-				sprintf(posbuf2,"%g,%g,%g",x+*pt2*0.5,y+0.5*pt2[1],z+0.5*pt2[2]);
++				sprintf(posbuf2,"%.17g,%.17g,%.17g",x+*pt2*0.5,y+0.5*pt2[1],z+0.5*pt2[2]);
+ 				if(strcmp(posbuf1,posbuf2)!=0) fprintf(fp,"cylinder{<%s>,<%s>,r}\n",posbuf1,posbuf2);
+ 			}
+ 		}
+@@ -1509,13 +1509,13 @@
+ 	for(i=1;i<p;i++) for(j=0;j<nu[i];j++) {
+ 		k=ed[i][j];
+ 		if(k>=0) {
+-			fprintf(fp,"%g %g %g\n",x+0.5*pts[3*i],y+0.5*pts[3*i+1],z+0.5*pts[3*i+2]);
++			fprintf(fp,"%.17g %.17g %.17g\n",x+0.5*pts[3*i],y+0.5*pts[3*i+1],z+0.5*pts[3*i+2]);
+ 			l=i;m=j;
+ 			do {
+ 				ed[k][ed[l][nu[l]+m]]=-1-l;
+ 				ed[l][m]=-1-k;
+ 				l=k;
+-				fprintf(fp,"%g %g %g\n",x+0.5*pts[3*k],y+0.5*pts[3*k+1],z+0.5*pts[3*k+2]);
++				fprintf(fp,"%.17g %.17g %.17g\n",x+0.5*pts[3*k],y+0.5*pts[3*k+1],z+0.5*pts[3*k+2]);
+ 			} while (search_edge(l,m,k));
+ 			fputs("\n\n",fp);
+ 		}
+@@ -1543,7 +1543,7 @@
+ 	int i,j,k,l,m,n;
+ 	double *ptsp=pts;
+ 	fprintf(fp,"mesh2 {\nvertex_vectors {\n%d\n",p);
+-	for(i=0;i<p;i++,ptsp+=3) fprintf(fp,",<%g,%g,%g>\n",x+*ptsp*0.5,y+ptsp[1]*0.5,z+ptsp[2]*0.5);
++	for(i=0;i<p;i++,ptsp+=3) fprintf(fp,",<%.17g,%.17g,%.17g>\n",x+*ptsp*0.5,y+ptsp[1]*0.5,z+ptsp[2]*0.5);
+ 	fprintf(fp,"}\nface_indices {\n%d\n",(p-2)<<1);
+ 	for(i=1;i<p;i++) for(j=0;j<nu[i];j++) {
+ 		k=ed[i][j];
+@@ -1771,8 +1771,8 @@
+  * \param[out] fp the file handle to write to. */
+ void voronoicell_base::output_vertices(FILE *fp) {
+ 	if(p>0) {
+-		fprintf(fp,"(%g,%g,%g)",*pts*0.5,pts[1]*0.5,pts[2]*0.5);
+-		for(double *ptsp=pts+3;ptsp<pts+3*p;ptsp+=3) fprintf(fp," (%g,%g,%g)",*ptsp*0.5,ptsp[1]*0.5,ptsp[2]*0.5);
++		fprintf(fp,"(%.17g,%.17g,%.17g)",*pts*0.5,pts[1]*0.5,pts[2]*0.5);
++		for(double *ptsp=pts+3;ptsp<pts+3*p;ptsp+=3) fprintf(fp," (%.17g,%.17g,%.17g)",*ptsp*0.5,ptsp[1]*0.5,ptsp[2]*0.5);
+ 	}
+ }
+ 
+@@ -1797,8 +1797,8 @@
+  *                    coordinate system. */
+ void voronoicell_base::output_vertices(double x,double y,double z,FILE *fp) {
+ 	if(p>0) {
+-		fprintf(fp,"(%g,%g,%g)",x+*pts*0.5,y+pts[1]*0.5,z+pts[2]*0.5);
+-		for(double *ptsp=pts+3;ptsp<pts+3*p;ptsp+=3) fprintf(fp," (%g,%g,%g)",x+*ptsp*0.5,y+ptsp[1]*0.5,z+ptsp[2]*0.5);
++		fprintf(fp,"(%.17g,%.17g,%.17g)",x+*pts*0.5,y+pts[1]*0.5,z+pts[2]*0.5);
++		for(double *ptsp=pts+3;ptsp<pts+3*p;ptsp+=3) fprintf(fp," (%.17g,%.17g,%.17g)",x+*ptsp*0.5,y+ptsp[1]*0.5,z+ptsp[2]*0.5);
+ 	}
+ }
+ 
+@@ -2031,27 +2031,27 @@
+ 
+ 				// Particle-related output
+ 				case 'i': fprintf(fp,"%d",i);break;
+-				case 'x': fprintf(fp,"%g",x);break;
+-				case 'y': fprintf(fp,"%g",y);break;
+-				case 'z': fprintf(fp,"%g",z);break;
+-				case 'q': fprintf(fp,"%g %g %g",x,y,z);break;
+-				case 'r': fprintf(fp,"%g",r);break;
++				case 'x': fprintf(fp,"%.17g",x);break;
++				case 'y': fprintf(fp,"%.17g",y);break;
++				case 'z': fprintf(fp,"%.17g",z);break;
++				case 'q': fprintf(fp,"%.17g %.17g %.17g",x,y,z);break;
++				case 'r': fprintf(fp,"%.17g",r);break;
+ 
+ 				// Vertex-related output
+ 				case 'w': fprintf(fp,"%d",p);break;
+ 				case 'p': output_vertices(fp);break;
+ 				case 'P': output_vertices(x,y,z,fp);break;
+ 				case 'o': output_vertex_orders(fp);break;
+-				case 'm': fprintf(fp,"%g",0.25*max_radius_squared());break;
++				case 'm': fprintf(fp,"%.17g",0.25*max_radius_squared());break;
+ 
+ 				// Edge-related output
+ 				case 'g': fprintf(fp,"%d",number_of_edges());break;
+-				case 'E': fprintf(fp,"%g",total_edge_distance());break;
++				case 'E': fprintf(fp,"%.17g",total_edge_distance());break;
+ 				case 'e': face_perimeters(vd);voro_print_vector(vd,fp);break;
+ 
+ 				// Face-related output
+ 				case 's': fprintf(fp,"%d",number_of_faces());break;
+-				case 'F': fprintf(fp,"%g",surface_area());break;
++				case 'F': fprintf(fp,"%.17g",surface_area());break;
+ 				case 'A': {
+ 						  face_freq_table(vi);
+ 						  voro_print_vector(vi,fp);
+@@ -2070,16 +2070,16 @@
+ 					  break;
+ 
+ 				// Volume-related output
+-				case 'v': fprintf(fp,"%g",volume());break;
++				case 'v': fprintf(fp,"%.17g",volume());break;
+ 				case 'c': {
+ 						  double cx,cy,cz;
+ 						  centroid(cx,cy,cz);
+-						  fprintf(fp,"%g %g %g",cx,cy,cz);
++						  fprintf(fp,"%.17g %.17g %.17g",cx,cy,cz);
+ 					  } break;
+ 				case 'C': {
+ 						  double cx,cy,cz;
+ 						  centroid(cx,cy,cz);
+-						  fprintf(fp,"%g %g %g",x+cx,y+cy,z+cz);
++						  fprintf(fp,"%.17g %.17g %.17g",x+cx,y+cy,z+cz);
+ 					  } break;
+ 
+ 				// End-of-string reached
+@@ -2227,7 +2227,7 @@
+ 		while(j<(nu[i]<<1)) printf(" %d",ed[i][j]);
+ 		printf("   %d",ed[i][j]);
+ 		print_edges_neighbors(i);
+-		printf("  %g %g %g %p",*ptsp,ptsp[1],ptsp[2],(void*) ed[i]);
++		printf("  %.17g %.17g %.17g %p",*ptsp,ptsp[1],ptsp[2],(void*) ed[i]);
+ 		if(ed[i]>=mep[nu[i]]+mec[nu[i]]*((nu[i]<<1)+1)) puts(" Memory error");
+ 		else puts("");
+ 	}
+--- a/src/common.cc	2013-10-17 13:54:13.000000000 -0400
++++ b/src/common.cc	2026-11-07 16:14:34.590994208 -0500
+@@ -39,15 +39,15 @@
+ void voro_print_vector(std::vector<double> &v,FILE *fp) {
+ 	int k=0,s=v.size();
+ 	while(k+4<s) {
+-		fprintf(fp,"%g %g %g %g ",v[k],v[k+1],v[k+2],v[k+3]);
++		fprintf(fp,"%.17g %.17g %.17g %.17g ",v[k],v[k+1],v[k+2],v[k+3]);
+ 		k+=4;
+ 	}
+ 	if(k+3<=s) {
+-		if(k+4==s) fprintf(fp,"%g %g %g %g",v[k],v[k+1],v[k+2],v[k+3]);
+-		else fprintf(fp,"%g %g %g",v[k],v[k+1],v[k+2]);
++		if(k+4==s) fprintf(fp,"%.17g %.17g %.17g %.17g",v[k],v[k+1],v[k+2],v[k+3]);
++		else fprintf(fp,"%.17g %.17g %.17g",v[k],v[k+1],v[k+2]);
+ 	} else {
+-		if(k+2==s) fprintf(fp,"%g %g",v[k],v[k+1]);
+-		else fprintf(fp,"%g",v[k]);
++		if(k+2==s) fprintf(fp,"%.17g %.17g",v[k],v[k+1]);
++		else fprintf(fp,"%.17g",v[k]);
+ 	}
+ }
+ 
+--- a/src/common.hh	2013-10-17 13:54:13.000000000 -0400
++++ b/src/common.hh	2026-11-07 16:14:34.590922773 -0500
+@@ -35,9 +35,9 @@
+  * \param[in] fp the file stream to print to. */
+ inline void voro_print_positions(std::vector<double> &v,FILE *fp=stdout) {
+ 	if(v.size()>0) {
+-		fprintf(fp,"(%g,%g,%g)",v[0],v[1],v[2]);
++		fprintf(fp,"(%.17g,%.17g,%.17g)",v[0],v[1],v[2]);
+ 		for(int k=3;(unsigned int) k<v.size();k+=3) {
+-			fprintf(fp," (%g,%g,%g)",v[k],v[k+1],v[k+2]);
++			fprintf(fp," (%.17g,%.17g,%.17g)",v[k],v[k+1],v[k+2]);
+ 		}
+ 	}
+ }
